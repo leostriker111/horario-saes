@@ -177,9 +177,11 @@ class SesionSaes:
         (tabs) que ya parsea la app. El SAES exige elegir carrera, turno, plan
         y periodo; carrera se auto-detecta si no se pasa.
 
-        NOTA: es un ASP.NET WebForms multi-postback; los nombres de campo están
-        verificados pero la estructura de la tabla renderizada puede variar por
-        escuela. Si algo no cuadra, usa 📂 Cargar TXT."""
+        NOTA: el render del grid (tabla ctl00_mainCopy_dbgHorarios, 11 cols:
+        Grupo/Asignatura/Profesor/Edificio/Salón/Lun..Sáb) depende de una
+        secuencia de autopostbacks difícil de reproducir headless de forma
+        confiable. Para horarios se recomienda el bookmarklet (ver README) que
+        copia el grid ya renderizado. Este método queda como intento best-effort."""
         html = self._get(RUTA_HORARIOS)
         if not carrera:
             cs = self.carreras_horarios()
