@@ -5,8 +5,11 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from horario_saes.modulos.dialogos import (DialogoBloque, DialogoCheck, DialogoExportar,
                               DialogoFiltro, VistaArbol, VistaPlan, VistaProfesores)
-from horario_saes.modulos.modelo import Estado
+from horario_saes.modulos.modelo import Estado, Rama
 from horario_saes.modulos.parser_saes import DIAS_LARGO
+from horario_saes.modulos.iconos import FA, cargar_fuentes, crear_imagen_icono
+from horario_saes.config import get_config
+from horario_saes.modulos.document_loader import DocumentLoader, LoadError
 
 RUTA_SESION = Path.home() / ".horario_saes" / "sesion.json"
 _vieja = Path(__file__).resolve().parent.parent / "datos" / "sesion.json"
@@ -23,6 +26,11 @@ class App(tk.Tk):
         self.title("Horarios SAES")
         self.geometry("1280x760")
         self.minsize(980, 600)
+        cargar_fuentes(self)
+        self.config_datos = get_config()
+        self.loader = DocumentLoader(self.config_datos)
+        self._iconos: dict[str, tk.PhotoImage] = {}   # refs para que no las borre el GC
+        self._lista_visible = True
 
         self.estado = Estado(RUTA_SESION)
         self.filtros = {"texto": "", "solo_favoritos": False,
@@ -44,27 +52,52 @@ class App(tk.Tk):
             self.after(50, self.refresh)
 
     # ------------------------------------------------------------ layout
+    def _btn(self, parent, icono, texto, command):
+        try:
+            img = crear_imagen_icono(icono, color="#212121")
+            self._iconos[texto] = img
+            b = ttk.Button(parent, text=texto, image=img, compound="left",
+                           command=command)
+        except Exception:
+            b = ttk.Button(parent, text=texto, command=command)
+        b.pack(side="left", padx=2)
+        return b
+
     def _construir_toolbar(self) -> None:
         barra = ttk.Frame(self, padding=(8, 6))
         barra.pack(fill="x")
-        mb = ttk.Menubutton(barra, text="📥 Cargar datos")
+
+        mb = ttk.Menubutton(barra, text=" Cargar datos")
+        try:
+            self._iconos["mb"] = crear_imagen_icono(FA.FOLDER_OPEN, color="#212121")
+            mb.config(image=self._iconos["mb"], compound="left")
+        except Exception:
+            pass
         menu = tk.Menu(mb, tearoff=False)
-        menu.add_command(label="🌐 Desde el SAES (en línea)", command=self._abrir_saes)
-        menu.add_command(label="📂 Desde un TXT (escuelas sin SAES)",
+        menu.add_command(label="Desde el SAES (en línea)", command=self._abrir_saes)
+        menu.add_command(label="Desde un TXT (escuelas sin SAES)",
                          command=self._cargar_txt)
+        if len(self.config_datos.origenes) > 0:
+            menu.add_separator()
+            for o in self.config_datos.origenes:
+                menu.add_command(label=f"Nube: {o.nombre}",
+                                 command=lambda n=o.nombre: self._sync_escuela(n))
         mb["menu"] = menu
         mb.pack(side="left", padx=2)
-        ttk.Button(barra, text="🔍 Filtrar", command=self._abrir_filtro).pack(side="left", padx=2)
-        ttk.Button(barra, text="🌿 Bifurcar", command=self._bifurcar).pack(side="left", padx=2)
-        ttk.Button(barra, text="🌳 Árbol", command=self._abrir_arbol).pack(side="left", padx=2)
-        ttk.Button(barra, text="➕ Bloque propio", command=self._abrir_bloque).pack(side="left", padx=2)
-        ttk.Button(barra, text="📋 Plan/Equiv", command=self._abrir_plan).pack(side="left", padx=2)
-        ttk.Button(barra, text="✅ Check", command=self._abrir_check).pack(side="left", padx=2)
-        ttk.Button(barra, text="🎓 Cursadas", command=self._abrir_cursadas).pack(side="left", padx=2)
+
+        self._btn(barra, FA.SEARCH, "Filtrar", self._abrir_filtro)
+        self._btn(barra, FA.SEEDLING, "Bifurcar", self._bifurcar)
+        self._btn(barra, FA.TREE, "Árbol", self._abrir_arbol)
+        self._btn(barra, FA.PLUS, "Bloque propio", self._abrir_bloque)
+        self._btn(barra, FA.CLIPBOARD, "Plan/Equiv", self._abrir_plan)
+        self._btn(barra, FA.CHECK, "Check", self._abrir_check)
+        self._btn(barra, FA.CHECK, "Cursadas", self._abrir_cursadas)
         ttk.Button(barra, text="◀", width=2, command=self._rand_prev).pack(side="left", padx=(6, 0))
-        ttk.Button(barra, text="🎲 Random", command=self._aleatorio).pack(side="left")
+        ttk.Button(barra, text="🎲", width=3, command=self._aleatorio).pack(side="left")
         ttk.Button(barra, text="▶", width=2, command=self._rand_next).pack(side="left", padx=(0, 2))
-        ttk.Button(barra, text="📤 Exportar", command=self._abrir_exportar).pack(side="left", padx=2)
+        self._btn(barra, FA.UPLOAD, "Exportar", self._abrir_exportar)
+        self.btn_lista = self._btn(barra, FA.EYE_SLASH, "Ocultar lista", self._toggle_lista)
+        self._btn(barra, FA.TRASH, "Limpiar", self._limpiar_todo)
 
         ttk.Label(barra, text="  Créditos máx:").pack(side="left")
         self.var_max = tk.StringVar()
@@ -83,7 +116,9 @@ class App(tk.Tk):
         cuerpo.pack(fill="both", expand=True)
 
         # panel lateral: canvas dibujado (mucho más rápido que cientos de widgets)
+        self.cuerpo = cuerpo
         lateral = ttk.Frame(cuerpo, width=330)
+        self.lista_frame = lateral
         lateral.pack(side="left", fill="y")
         lateral.pack_propagate(False)
         self.canvas_lista = tk.Canvas(lateral, highlightthickness=0, bg="#FAFAFA",
@@ -174,6 +209,59 @@ class App(tk.Tk):
                 "Sin datos",
                 "No encontré grupos en ese archivo. ¿Seguro que es el formato "
                 "del SAES con tabuladores?")
+        self.refresh()
+
+    def _sync_escuela(self, nombre: str) -> None:
+        """Descarga el datafile de una escuela desde el repo de datos (nube),
+        con fallback a la copia local si no hay internet."""
+        for i, o in enumerate(self.config_datos.origenes):
+            if o.nombre == nombre:
+                self.config_datos.active_index = i
+                break
+        try:
+            ruta = self.loader.cargar_escuela_activa(force=True)
+        except LoadError as e:
+            if self.loader.existe_archivo_local(nombre):
+                ruta = self.loader.existe_archivo_local(nombre)
+            else:
+                messagebox.showerror("Sin datos", f"No pude bajar {nombre}:\n{e}")
+                return
+        if not ruta:
+            messagebox.showwarning("Sin datos", f"No hay datos para {nombre}.")
+            return
+        try:
+            n = self.estado.cargar_txt(str(ruta))
+        except OSError as e:
+            messagebox.showerror("Error al leer", str(e))
+            return
+        messagebox.showinfo("Nube", f"{nombre}: {n} grupos cargados.")
+        self.refresh()
+
+    def _toggle_lista(self) -> None:
+        if self._lista_visible:
+            self.lista_frame.pack_forget()
+            self.btn_lista.config(text="Mostrar lista")
+        else:
+            self.lista_frame.pack(side="left", fill="y", before=self.canvas_horario)
+            self.btn_lista.config(text="Ocultar lista")
+        self._lista_visible = not self._lista_visible
+
+    def _limpiar_todo(self) -> None:
+        if not messagebox.askyesno(
+                "Limpiar todo",
+                "Se borrarán todas las selecciones, ramas, favoritos y el check.\n"
+                "¿Continuar?"):
+            return
+        e = self.estado
+        e.ramas = {1: Rama(1, "Principal")}
+        e.rama_actual = 1
+        e._next_rama = 2
+        e.favoritos.clear()
+        e.necesarias.clear()
+        e.colapsadas.clear()
+        self._hist.clear()
+        self._hist_i = -1
+        self._combos_vistos.clear()
         self.refresh()
 
     def _unica(self, clave: str, fabrica) -> None:
