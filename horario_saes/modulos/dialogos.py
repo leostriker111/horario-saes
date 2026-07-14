@@ -48,22 +48,27 @@ class DialogoSaes(tk.Toplevel):
         self.ent_cap = ttk.Entry(cuerpo, width=32)
         self.ent_cap.grid(row=5, column=1, pady=3)
 
-        self.var_qh = tk.BooleanVar(value=True)
-        self.var_qe = tk.BooleanVar(value=True)
+        self.var_qh = tk.BooleanVar(value=False)
+        self.var_qe = tk.BooleanVar(value=False)
         self.var_qk = tk.BooleanVar(value=True)
-        ttk.Checkbutton(cuerpo, text="Horarios disponibles",
-                        variable=self.var_qh).grid(row=6, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(cuerpo, text="Equivalencias y créditos",
-                        variable=self.var_qe).grid(row=7, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(cuerpo, text="Marcar cursadas desde mi kardex",
-                        variable=self.var_qk).grid(row=8, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(cuerpo, text="Marcar cursadas desde mi kardex (recomendado)",
+                        variable=self.var_qk).grid(row=6, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(cuerpo, text="Horarios (experimental — mejor usa Nube o el bookmarklet)",
+                        variable=self.var_qh).grid(row=7, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(cuerpo, text="Equivalencias y créditos (experimental)",
+                        variable=self.var_qe).grid(row=8, column=0, columnspan=2, sticky="w")
+        ttk.Label(cuerpo, foreground="#546E7A", font=("Segoe UI", 8), wraplength=300,
+                  justify="left", text="Los horarios se bajan mejor por 'Cargar datos → "
+                  "Nube', o con el bookmarklet. El login aquí sirve sobre todo para "
+                  "marcar tus materias cursadas.").grid(row=9, column=0, columnspan=2,
+                                                        sticky="w", pady=(2, 0))
 
         self.lbl_estado = ttk.Label(cuerpo, foreground="#546E7A", wraplength=300,
                                     justify="left")
-        self.lbl_estado.grid(row=9, column=0, columnspan=2, pady=(6, 2))
+        self.lbl_estado.grid(row=10, column=0, columnspan=2, pady=(6, 2))
 
         botones = ttk.Frame(cuerpo)
-        botones.grid(row=10, column=0, columnspan=2, pady=(6, 0))
+        botones.grid(row=11, column=0, columnspan=2, pady=(6, 0))
         self.btn_entrar = ttk.Button(botones, text="Entrar y descargar",
                                      command=self._entrar)
         self.btn_entrar.pack(side="left", padx=4)
