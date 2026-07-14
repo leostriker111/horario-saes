@@ -124,6 +124,7 @@ class App(tk.Tk):
         self.canvas_horario.pack(side="left", fill="both", expand=True)
         self._redibujo_pendiente: str | None = None
         self._bloques_horario: dict[str, str] = {}
+        self._bloques_prof: dict[str, str] = {}
         self.canvas_horario.bind("<Configure>", lambda e: self._redibujar_pronto())
         self.canvas_horario.bind("<Button-1>", self._click_horario)
 
@@ -249,6 +250,10 @@ class App(tk.Tk):
     def _click_horario(self, evento) -> None:
         for item in self.canvas_horario.find_withtag("current"):
             for tag in self.canvas_horario.gettags(item):
+                profe = self._bloques_prof.get(tag)
+                if profe:
+                    self._abrir_foros_profesor(profe)
+                    return
                 op_id = self._bloques_horario.get(tag)
                 if op_id:
                     candados = self.estado.rama().candados
@@ -258,6 +263,12 @@ class App(tk.Tk):
                         candados.append(op_id)
                     self.refresh()
                     return
+
+    def _abrir_foros_profesor(self, profesor: str) -> None:
+        import webbrowser
+        from urllib.parse import quote_plus
+        for plantilla in self.estado.foros:
+            webbrowser.open(plantilla.replace("{profesor}", quote_plus(profesor.strip())))
 
     def _aleatorio(self) -> None:
         import random as _rnd
@@ -731,6 +742,7 @@ class App(tk.Tk):
         # bloques
         if not mini:
             self._bloques_horario.clear()
+            self._bloques_prof.clear()
         candados = set(rama.candados)
         nb = 0
         for op in self.estado.seleccionadas(rama):
@@ -742,9 +754,10 @@ class App(tk.Tk):
                 extra = {"dash": (4, 2)} if op.propia else {}
                 con_candado = op.id in candados
                 etiquetas = ()
+                idx = nb
                 if not mini:
-                    tag_b = f"blk{nb}"
                     nb += 1
+                    tag_b = f"blk{idx}"
                     self._bloques_horario[tag_b] = op.id
                     etiquetas = (tag_b,)
                 cv.create_rectangle(x1, y1, x2, y2, fill=color,
@@ -756,12 +769,21 @@ class App(tk.Tk):
                                    font=("Segoe UI", 10), tags=etiquetas)
                 if not mini:
                     lugar = f" · {op.salon}" if op.salon and op.salon != "000" else ""
-                    texto = f"{op.grupo}-{op.materia}\n{op.profesor}{lugar}"
+                    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
                     if op.propia:
-                        texto = f"{op.materia}\n{op.nota or ''}{lugar}"
-                    cv.create_text((x1 + x2) / 2, (y1 + y2) / 2, text=texto,
-                                   font=("Segoe UI", 8), justify="center",
-                                   width=x2 - x1 - 6, tags=etiquetas)
+                        cv.create_text(cx, cy, text=f"{op.materia}\n{op.nota or ''}{lugar}",
+                                       font=("Segoe UI", 8), justify="center",
+                                       width=x2 - x1 - 6, tags=etiquetas)
+                    else:
+                        cv.create_text(cx, cy - 10, text=f"{op.grupo}-{op.materia}",
+                                       font=("Segoe UI", 8), justify="center",
+                                       width=x2 - x1 - 6, tags=etiquetas)
+                        tag_pf = f"pf{idx}"
+                        self._bloques_prof[tag_pf] = op.profesor
+                        cv.create_text(cx, cy + 12, text=f"{op.profesor}{lugar}",
+                                       font=("Segoe UI", 8, "underline"),
+                                       fill="#0D47A1", justify="center",
+                                       width=x2 - x1 - 6, tags=(tag_pf,), activefill="#1976D2")
 
     # ------------------------------------------------------------- ramas
     def _refrescar_ramas(self) -> None:
