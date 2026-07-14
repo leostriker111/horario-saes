@@ -1,4 +1,7 @@
+import os
 import re
+import sys
+import subprocess
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -11,12 +14,61 @@ HORA_INI, HORA_FIN = 7, 22
 FORMATOS = ("pdf", "png", "jpg", "svg")
 
 
+def _find_font_file(negrita: bool = False) -> str | None:
+    # 1. Windows: check Segoe UI
+    if sys.platform.startswith("win"):
+        nombre = "segoeuib.ttf" if negrita else "segoeui.ttf"
+        path = Path(os.environ.get("SystemRoot", "C:/Windows")) / "Fonts" / nombre
+        if path.exists():
+            return str(path)
+
+    # 2. Linux: use fc-match
+    if sys.platform.startswith("linux"):
+        pattern = "sans-serif:bold" if negrita else "sans-serif"
+        try:
+            res = subprocess.run(["fc-match", "-f", "%{file}", pattern],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if res.returncode == 0 and res.stdout.strip():
+                p = res.stdout.strip()
+                if Path(p).exists():
+                    return p
+        except Exception:
+            pass
+        # Fallback standard paths on Linux
+        fallbacks = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if negrita else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if negrita else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/liberation/LiberationSans-Bold.ttf" if negrita else "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf" if negrita else "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        ]
+        for p in fallbacks:
+            if Path(p).exists():
+                return p
+
+    # 3. macOS (darwin): check standard paths
+    if sys.platform.startswith("darwin"):
+        fallbacks = [
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/System/Library/Fonts/Arial.ttf",
+            "/Library/Fonts/Arial.ttf",
+        ]
+        for p in fallbacks:
+            if Path(p).exists():
+                return p
+
+    return None
+
+
 def _fuente(tam: int, negrita: bool = False) -> ImageFont.FreeTypeFont:
-    nombre = "segoeuib.ttf" if negrita else "segoeui.ttf"
-    try:
-        return ImageFont.truetype(f"C:/Windows/Fonts/{nombre}", tam)
-    except OSError:
-        return ImageFont.load_default(tam)
+    path = _find_font_file(negrita)
+    if path:
+        try:
+            return ImageFont.truetype(path, tam)
+        except OSError:
+            pass
+    return ImageFont.load_default(tam)
+
 
 
 def _envolver(draw: ImageDraw.ImageDraw, texto: str, fuente, max_ancho: float) -> list[str]:

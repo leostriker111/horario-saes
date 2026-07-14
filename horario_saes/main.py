@@ -1,63 +1,97 @@
-import shutil
+"""
+Esta app sirve para realizar horarios del:
+Instituto Politecnico Nacional.
+"""
+
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from horario_saes.modulos.dialogos import (DialogoBloque, DialogoCheck, DialogoExportar,
-                              DialogoFiltro, VistaArbol, VistaPlan, VistaProfesores)
-from horario_saes.modulos.modelo import Estado
+from horario_saes.config import get_config
+from horario_saes.modulos.colors import Colors
+from horario_saes.modulos.document_loader import DocumentLoader, LoadError
+from horario_saes.modulos.modelo import Estado, Rama
 from horario_saes.modulos.parser_saes import DIAS_LARGO
+from horario_saes.modulos.dialogos import (
+    DialogoBloque,
+    DialogoCheck,
+    DialogoExportar,
+    DialogoFiltro,
+    VistaArbol,
+    VistaPlan,
+    VistaProfesores,
+)
+from horario_saes.modulos.iconos import FA, FONT_SOLID, FONT_REGULAR, cargar_fuentes, crear_imagen_icono
 
-RUTA_SESION = Path.home() / ".horario_saes" / "sesion.json"
-_vieja = Path(__file__).resolve().parent.parent / "datos" / "sesion.json"
-if not RUTA_SESION.exists() and _vieja.exists():
-    RUTA_SESION.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(_vieja, RUTA_SESION)
+RUTA_SESION = Path.home() / "horarios_saes" / "datafiles" / "UPIICSA.txt"
 HORA_INI, HORA_FIN = 7, 22
-GRIS = "#78909C"
+
+
+class IconProxy:
+    def __init__(self, button):
+        self.button = button
+
+    def config(self, text=None, **kwargs):
+        if text is not None:
+            img = crear_imagen_icono(text, color="#212121")
+            self.button.config(image=img)
+            self.button.image = img
+
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        cargar_fuentes(self)
         self.title("Horarios SAES")
+
+        self.config = get_config()
+        self.loader = DocumentLoader(self.config)
+        self.estado = Estado(RUTA_SESION)
+        self.filtros = {
+            "texto": "",
+            "solo_favoritos": False,
+            "ocultar_incompatibles": False,
+            "turno": "todos",
+            "solo_check": False,
+            "ocultar_cursadas": False,
+            "dias": [True, True, True, True, True],
+            "hora_ini": 7,
+            "hora_fin": 22,
+        }
+
         self.geometry("1280x760")
         self.minsize(980, 600)
 
-        self.estado = Estado(RUTA_SESION)
-        self.filtros = {"texto": "", "solo_favoritos": False,
-                        "ocultar_incompatibles": False, "turno": "todos",
-                        "solo_check": False, "ocultar_cursadas": False,
-                        "dias": [True] * 5, "hora_ini": 7, "hora_fin": 22}
-        self._combos_vistos: set[frozenset] = set()   # volátil: randoms ya dados
-        self._hist: list[frozenset] = []              # historial ◀ ▶ del random
-        self._hist_i = -1
-        self._ventanas: dict[str, tk.Toplevel] = {}
+        self._acciones_lista: dict[str, tuple] = {}
+        self._bloques_horario: dict[str, str] = {}
 
         self._construir_toolbar()
+        self._construir_menu_celulares()
         self._construir_cuerpo()
         self._construir_barra_ramas()
 
         self.protocol("WM_DELETE_WINDOW", self._cerrar)
-        if self.estado.cargar_sesion():
+        cargado = self.estado.cargar_sesion()
+        if cargado and self.estado.opciones:
             self.after(50, self.refresh)
+        elif self.config.origenes:
+            self.after(50, self._auto_cargar_remoto)
 
-    # ------------------------------------------------------------ layout
     def _construir_toolbar(self) -> None:
         barra = ttk.Frame(self, padding=(8, 6))
         barra.pack(fill="x")
-        ttk.Button(barra, text="📂 Cargar TXT", command=self._cargar_txt).pack(side="left", padx=2)
-        ttk.Button(barra, text="🔍 Filtrar", command=self._abrir_filtro).pack(side="left", padx=2)
-        ttk.Button(barra, text="🌿 Bifurcar", command=self._bifurcar).pack(side="left", padx=2)
-        ttk.Button(barra, text="🌳 Árbol", command=self._abrir_arbol).pack(side="left", padx=2)
-        ttk.Button(barra, text="➕ Bloque propio", command=self._abrir_bloque).pack(side="left", padx=2)
-        ttk.Button(barra, text="📋 Plan/Equiv", command=self._abrir_plan).pack(side="left", padx=2)
-        ttk.Button(barra, text="✅ Check", command=self._abrir_check).pack(side="left", padx=2)
-        ttk.Button(barra, text="🎓 Cursadas", command=self._abrir_cursadas).pack(side="left", padx=2)
-        ttk.Button(barra, text="◀", width=2, command=self._rand_prev).pack(side="left", padx=(6, 0))
-        ttk.Button(barra, text="🎲 Random", command=self._aleatorio).pack(side="left")
-        ttk.Button(barra, text="▶", width=2, command=self._rand_next).pack(side="left", padx=(0, 2))
-        ttk.Button(barra, text="📤 Exportar", command=self._abrir_exportar).pack(side="left", padx=2)
+
+        self._btn(barra, FA.FOLDER_OPEN, "Cargar TXT", self._cargar_txt)
+        self._btn(barra, FA.SEARCH, "Filtrar", self._abrir_filtro)
+        self._btn(barra, FA.SEEDLING, "Bifurcar", self._bifurcar)
+        self._btn(barra, FA.TREE, "Árbol", self._abrir_arbol)
+        self._btn(barra, FA.PLUS, "Bloque propio", self._abrir_bloque)
+        self._btn(barra, FA.CLIPBOARD, "Plan/Equiv", self._abrir_plan)
+        self._btn(barra, FA.CHECK, "Check", self._abrir_check)
+        self._btn(barra, FA.UPLOAD, "Exportar", self._abrir_exportar)
+        self._btn(barra, FA.TRASH, "Limpiar todo", self._limpiar_todo)
+        self.btn_lista_icon, self.btn_lista = self._btn(barra, FA.EYE_SLASH, "Ocultar lista", self._toggle_lista, ret_both=True)
 
         ttk.Label(barra, text="  Créditos máx:").pack(side="left")
         self.var_max = tk.StringVar()
@@ -71,283 +105,187 @@ class App(tk.Tk):
         self.lbl_check = ttk.Label(barra, font=("Segoe UI", 10, "bold"))
         self.lbl_check.pack(side="right")
 
-    def _construir_cuerpo(self) -> None:
-        cuerpo = ttk.Frame(self)
-        cuerpo.pack(fill="both", expand=True)
+    def _btn(self, parent, icon, text, command, ret_both=False):
+        img = crear_imagen_icono(icon, color="#212121")
+        btn = ttk.Button(parent, text=text, command=command, image=img, compound="left")
+        btn.image = img
+        btn.pack(side="left", padx=2)
+        if ret_both:
+            return (IconProxy(btn), btn)
+        return btn
 
-        # panel lateral: canvas dibujado (mucho más rápido que cientos de widgets)
-        lateral = ttk.Frame(cuerpo, width=330)
-        lateral.pack(side="left", fill="y")
-        lateral.pack_propagate(False)
-        self.canvas_lista = tk.Canvas(lateral, highlightthickness=0, bg="#FAFAFA",
-                                      yscrollincrement=24)
-        barra = ttk.Scrollbar(lateral, orient="vertical", command=self.canvas_lista.yview)
-        self.canvas_lista.configure(yscrollcommand=barra.set)
+    def _construir_menu_celulares(self) -> None:
+        if len(self.config.origenes) <= 1:
+            return
+        options = [o.nombre for o in self.config.origenes]
+        labels = ttk.Frame(self)
+        labels.pack(fill="x", padx=(8, 6))
+        ttk.Label(labels, text="Escuela: ", font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.var_school = tk.StringVar(value=options[self.config.active_index])
+        combobox = ttk.Combobox(
+            labels,
+            textvariable=self.var_school,
+            values=options,
+            state="readonly",
+            width=20,
+        )
+        combobox.pack(side="left")
+        combobox.bind("<<ComboboxSelected>>", self._on_school_change)
+        self.sync_btn = ttk.Button(
+            labels,
+            text="☁️ Sincronizar",
+            command=self._sync_remote
+        )
+        self.sync_btn.pack(side="left", padx=6)
+
+    def _on_school_change(self, event=None):
+        idx = self.var_school.get()
+        for i, o in enumerate(self.config.origenes):
+            if o.nombre == idx:
+                self.config.active_index = i
+                break
+        self._sync_remote(force=False)
+
+    def _construir_cuerpo(self) -> None:
+        self._lista_visible = True
+        self._paned = ttk.PanedWindow(self, orient="horizontal")
+        self._paned.pack(fill="both", expand=True, padx=6, pady=(2, 0))
+
+        self._lista_frame = ttk.Frame(self._paned)
+        self.canvas_lista = tk.Canvas(self._lista_frame, highlightthickness=0, bg=Colors.WHITE)
+        barra_l = ttk.Scrollbar(self._lista_frame, orient="vertical", command=self.canvas_lista.yview)
+        self.canvas_lista.configure(yscrollcommand=barra_l.set)
         self.canvas_lista.pack(side="left", fill="both", expand=True)
-        barra.pack(side="right", fill="y")
-        self._acciones_lista: dict[str, tuple[str, str]] = {}
+        barra_l.pack(side="right", fill="y")
         self.canvas_lista.bind("<Button-1>", self._click_lista)
         self.canvas_lista.bind("<Button-3>", self._click_der_lista)
+        self.canvas_lista.bind("<Enter>", lambda e: self._activar_rueda(True))
+        self.canvas_lista.bind("<Leave>", lambda e: self._activar_rueda(False))
+        self.canvas_lista.bind("<Configure>", lambda e: self._refrescar_lista())
+        self._paned.add(self._lista_frame, weight=2)
 
+        der = ttk.Frame(self._paned)
+        paned_der = ttk.PanedWindow(der, orient="vertical")
+        paned_der.pack(fill="both", expand=True)
 
-        # panel derecho: materias que estás inscribiendo (con scroll)
-        marco_insc = ttk.Frame(cuerpo, width=235)
-        marco_insc.pack(side="right", fill="y")
-        marco_insc.pack_propagate(False)
-        self.canvas_insc = tk.Canvas(marco_insc, highlightthickness=0)
-        barra_insc = ttk.Scrollbar(marco_insc, orient="vertical",
-                                   command=self.canvas_insc.yview)
-        self.panel_insc = ttk.Frame(self.canvas_insc)
-        self.canvas_insc.create_window((0, 0), window=self.panel_insc,
-                                       anchor="nw", width=212)
-        self.panel_insc.bind("<Configure>", lambda e: self.canvas_insc.configure(
-            scrollregion=self.canvas_insc.bbox("all")))
-        self.canvas_insc.configure(yscrollcommand=barra_insc.set)
-        self.canvas_insc.pack(side="left", fill="both", expand=True)
-        barra_insc.pack(side="right", fill="y")
-        self.bind_all("<MouseWheel>", self._rueda_global)
-        for btn, delta in (("<Button-4>", 120), ("<Button-5>", -120)):  # rueda en Linux
-            self.bind_all(btn, lambda e, d=delta: (setattr(e, "delta", d),
-                                                   self._rueda_global(e)))
-
-        # horario central (redibujo con retardo para no trabarse al redimensionar)
-        self.canvas_horario = tk.Canvas(cuerpo, bg="white", highlightthickness=0)
-        self.canvas_horario.pack(side="left", fill="both", expand=True)
-        self._redibujo_pendiente: str | None = None
-        self._bloques_horario: dict[str, str] = {}
-        self.canvas_horario.bind("<Configure>", lambda e: self._redibujar_pronto())
+        hor_frame = ttk.Frame(paned_der)
+        self.canvas_horario = tk.Canvas(hor_frame, bg=Colors.WHITE, highlightthickness=0)
+        self.canvas_horario.pack(fill="both", expand=True)
+        self.canvas_horario.bind("<Configure>", lambda e: self._dibujar_horario())
         self.canvas_horario.bind("<Button-1>", self._click_horario)
+        paned_der.add(hor_frame, weight=3)
+
+        self.panel_insc = ttk.Frame(paned_der)
+        scroll_insc = ttk.Scrollbar(self.panel_insc, orient="vertical")
+        canvas_insc = tk.Canvas(self.panel_insc, highlightthickness=0, yscrollcommand=scroll_insc.set)
+        scroll_insc.config(command=canvas_insc.yview)
+        canvas_insc.pack(side="left", fill="both", expand=True)
+        scroll_insc.pack(side="right", fill="y")
+        paned_der.add(self.panel_insc, weight=1)
+
+        self._paned.add(der, weight=5)
 
     def _construir_barra_ramas(self) -> None:
-        pie = ttk.Frame(self, padding=(8, 4))
-        pie.pack(fill="x")
-        self.lbl_rama = ttk.Label(pie, font=("Segoe UI", 10, "bold"))
-        self.lbl_rama.pack(side="left", padx=(0, 10))
-        self.marco_ramas = ttk.Frame(pie)
-        self.marco_ramas.pack(side="left", fill="x")
+        barra = ttk.Frame(self, padding=(8, 4))
+        barra.pack(fill="x", side="bottom")
+        ttk.Separator(barra, orient="horizontal").pack(fill="x", pady=(0, 4))
+        self.lbl_rama = ttk.Label(barra, font=("Segoe UI", 10, "bold"))
+        self.lbl_rama.pack(side="left", padx=(0, 8))
+        self.marco_ramas = ttk.Frame(barra)
+        self.marco_ramas.pack(side="left", fill="x", expand=True)
 
-    def _activar_rueda(self, activo: bool) -> None:
-        if activo:
-            self.canvas_lista.bind_all("<MouseWheel>", self._rueda_lista)
+    def _auto_cargar_remoto(self):
+        try:
+            ruta = self.loader.cargar_escuela_activa()
+            if ruta is None:
+                return
+            self._load_txt_path(ruta)
+        except LoadError:
+            pass
+
+    def _sync_remote(self, force=True):
+        try:
+            ruta = self.loader.cargar_escuela_activa(force=force)
+            if ruta is None:
+                messagebox.showwarning(
+                    "Sin datos remotos",
+                    f"No se pudo encontrar datos para {self.var_school.get()}.",
+                )
+                return
+            self._load_txt_path(ruta)
+        except LoadError as e:
+            if messagebox.askyesno(
+                "Error de sincronización",
+                f"{e}\n\n¿Quieres seleccionar un TXT manualmente?",
+            ):
+                self._cargar_txt_manual()
+            else:
+                messagebox.showwarning(
+                    "", "No se pudo cargar el archivo TXT"
+                )
+
+    def _cargar_txt(self):
+        if len(self.config.origenes) > 0:
+            self._sync_remote(force=False)
         else:
-            self.canvas_lista.unbind_all("<MouseWheel>")
+            self._cargar_txt_manual()
 
-    def _rueda_global(self, ev) -> None:
-        w = self.winfo_containing(ev.x_root, ev.y_root)
-        while w is not None:
-            if w is self.canvas_lista:
-                self.canvas_lista.yview_scroll(-3 if ev.delta > 0 else 3, "units")
-                return
-            if w is self.canvas_insc or w is self.panel_insc:
-                self.canvas_insc.yview_scroll(-2 if ev.delta > 0 else 2, "units")
-                return
-            w = getattr(w, "master", None)
-
-    def _redibujar_pronto(self) -> None:
-        if self._redibujo_pendiente:
-            self.after_cancel(self._redibujo_pendiente)
-        self._redibujo_pendiente = self.after(50, self._redibujo)
-
-    def _redibujo(self) -> None:
-        self._redibujo_pendiente = None
-        self._dibujar_horario()
-
-    # ----------------------------------------------------------- acciones
-    def _cargar_txt(self) -> None:
+    def _cargar_txt_manual(self):
         ruta = filedialog.askopenfilename(
             title="Selecciona el txt copiado del SAES",
             initialdir=str(Path.home() / "Downloads"),
-            filetypes=[("Texto", "*.txt"), ("Todos", "*.*")])
+            filetypes=[("Texto", "*.txt"), ("Todos", "*.*")],
+        )
         if not ruta:
             return
+        self._load_txt_path(ruta)
+
+    def _load_txt_path(self, ruta: Path):
         try:
-            n = self.estado.cargar_txt(ruta)
-        except OSError as e:
-            messagebox.showerror("Error al leer", str(e))
+            n = self.estado.cargar_txt(str(ruta))
+        except OSError as error:
+            messagebox.showerror("Error de lectura", str(error))
             return
         if n == 0:
             messagebox.showwarning(
                 "Sin datos",
-                "No encontré grupos en ese archivo. ¿Seguro que es el formato "
-                "del SAES con tabuladores?")
+                "No se encontraron grupos en ese archivo. ¿Seguro que es el formato "
+                "del SAES con tabuladores?",
+            )
         self.refresh()
 
-    def _unica(self, clave: str, fabrica) -> None:
-        v = self._ventanas.get(clave)
-        if v is not None and v.winfo_exists():
-            v.deiconify()
-            v.lift()
-            v.focus_set()
-            return
-        v = fabrica()
-        v.transient(self)
-        self._ventanas[clave] = v
+    def _abrir_filtro(self):
+        DialogoFiltro(self, self.filtros, self.refresh)
 
-    def _abrir_filtro(self) -> None:
-        self._unica("filtro", lambda: DialogoFiltro(self, self.filtros, self.refresh))
-
-    def _bifurcar(self) -> None:
+    def _bifurcar(self):
         nombre = simpledialog.askstring(
-            "Bifurcar", "Nombre de la nueva rama (vacío = automático):", parent=self)
+            "Bifurcar", "Nombre de la nueva rama (vacío = automático):", parent=self
+        )
         if nombre is None:
             return
         self.estado.bifurcar(nombre.strip())
         self.refresh()
 
-    def _abrir_arbol(self) -> None:
-        self._unica("arbol", lambda: VistaArbol(self, self.estado, self.refresh))
+    def _abrir_arbol(self):
+        VistaArbol(self, self.estado, self.refresh)
 
-    def _abrir_bloque(self) -> None:
+    def _abrir_bloque(self):
         DialogoBloque(self, self.estado, self.refresh)
 
-    def _abrir_exportar(self) -> None:
+    def _abrir_exportar(self):
         if not self.estado.seleccionadas():
-            messagebox.showinfo("Nada que exportar",
-                                "Agrega materias al horario primero.")
+            messagebox.showinfo("Nada que exportar", "Agrega materias al horario primero.")
             return
         DialogoExportar(self, self.estado)
 
-    def _abrir_plan(self) -> None:
-        self._unica("plan", lambda: VistaPlan(self, self.estado))
+    def _abrir_plan(self):
+        VistaPlan(self, self.estado)
 
-    def _abrir_cursadas(self) -> None:
-        self._unica("cursadas", lambda: DialogoCheck(self, self.estado, self.refresh,
-                     conjunto=self.estado.cursadas,
-                     titulo="Materias ya cursadas",
-                     ayuda="Palomea las que ya aprobaste. Con el filtro "
-                           "'Ocultar ya cursadas' desaparecen de la lista "
-                           "(equivalencias incluidas)."))
+    def _abrir_check(self):
+        DialogoCheck(self, self.estado, self.refresh)
 
-    def _aplicar_combo(self, combo: frozenset) -> None:
-        rama = self.estado.rama()
-        rama.seleccion = list(combo)
-        rama.candados = [i for i in rama.candados if i in rama.seleccion]
-        self.refresh()
-
-    def _rand_prev(self) -> None:
-        if self._hist_i > 0:
-            self._hist_i -= 1
-            self._aplicar_combo(self._hist[self._hist_i])
-
-    def _rand_next(self) -> None:
-        if self._hist_i < len(self._hist) - 1:
-            self._hist_i += 1
-            self._aplicar_combo(self._hist[self._hist_i])
-        else:
-            self._aleatorio()
-
-    def _click_horario(self, evento) -> None:
-        for item in self.canvas_horario.find_withtag("current"):
-            for tag in self.canvas_horario.gettags(item):
-                op_id = self._bloques_horario.get(tag)
-                if op_id:
-                    candados = self.estado.rama().candados
-                    if op_id in candados:
-                        candados.remove(op_id)
-                    else:
-                        candados.append(op_id)
-                    self.refresh()
-                    return
-
-    def _aleatorio(self) -> None:
-        import random as _rnd
-        from horario_saes.modulos.parser_saes import normalizar
-        e = self.estado
-        rama = e.rama()
-        sel = e.seleccionadas()
-        # fijas: candados + bloques propios seleccionados
-        fijas = [op for op in sel if op.id in rama.candados or op.propia]
-        cubiertas = set()
-        for op in fijas:
-            cubiertas.add(normalizar(op.materia))
-            cubiertas |= e.equivalentes(op.materia)
-
-        # materias objetivo: las del check si hay, si no las inscritas ahorita
-        if e.necesarias:
-            objetivo_n = {normalizar(n) for n in e.necesarias}
-            materias = [m for m in e.orden_materias
-                        if normalizar(m) in objetivo_n
-                        or (e.equivalentes(m) & objetivo_n)]
-        else:
-            materias = [op.materia for op in sel if not op.propia]
-        materias = [m for m in dict.fromkeys(materias)
-                    if normalizar(m) not in cubiertas]
-        if not materias:
-            messagebox.showinfo("Random", "No hay materias que sortear: todo "
-                                "está con candado o no hay check/selección.")
-            return
-
-        pools: dict[str, list] = {}
-        sin_opciones = []
-        for m in materias:
-            pool = [op for op in e.opciones_de(m) if self._pasa_filtro(op)]
-            if pool:
-                pools[m] = pool
-            else:
-                sin_opciones.append(m)
-        if not pools:
-            messagebox.showinfo("Random", "Con estos filtros ninguna materia "
-                                "objetivo tiene opciones.")
-            return
-
-        combos = e.combos_posibles(fijas, pools)
-        actual = frozenset(rama.seleccion)
-        if combos is not None:
-            combos = [c for c in set(combos) if c != actual]
-            nuevos = [c for c in combos if c not in self._combos_vistos]
-            if not combos:
-                messagebox.showinfo("Random", "Solo existe la combinación que "
-                                    "ya tienes puesta con estos filtros.")
-                return
-            if not nuevos:
-                messagebox.showinfo(
-                    "Random",
-                    f"¡Ya le diste la vuelta! Con estos filtros y candados hay "
-                    f"{len(combos)} combinaciones posibles y ya las viste todas. "
-                    f"(cambia filtros o candados para abrir más opciones)")
-                return
-            elegido = _rnd.choice(nuevos)
-        else:
-            # demasiadas combinaciones para enumerar: intento aleatorio
-            from horario_saes.modulos.parser_saes import chocan
-            elegido = None
-            for _ in range(300):
-                picks = list(fijas)
-                for m in sorted(pools, key=lambda x: len(pools[x])):
-                    cands = [op for op in pools[m]
-                             if all(not chocan(op, otra) for otra in picks)]
-                    if cands:
-                        picks.append(_rnd.choice(cands))
-                combo = frozenset(op.id for op in picks)
-                if combo != actual and combo not in self._combos_vistos:
-                    elegido = combo
-                    break
-            if elegido is None:
-                messagebox.showinfo("Random", "No encontré una combinación "
-                                    "nueva tras 300 intentos; probablemente ya "
-                                    "las viste todas.")
-                return
-
-        self._combos_vistos.add(actual)
-        self._combos_vistos.add(elegido)
-        if not self._hist:
-            self._hist.append(actual)
-            self._hist_i = 0
-        self._hist = self._hist[:self._hist_i + 1]
-        self._hist.append(elegido)
-        self._hist_i = len(self._hist) - 1
-        self._aplicar_combo(elegido)
-        if sin_opciones:
-            self.lbl_check.config(
-                text=f"(sin opciones con filtros: {len(sin_opciones)})   |",
-                foreground="#E65100")
-
-    def _abrir_check(self) -> None:
-        self._unica("check", lambda: DialogoCheck(self, self.estado, self.refresh))
-
-    def _ver_profesores(self, materia: str) -> None:
-        self._unica(f"prof|{materia}", lambda: VistaProfesores(
-            self, self.estado, materia, self.refresh))
+    def _ver_profesores(self, materia):
+        VistaProfesores(self, self.estado, materia, self.refresh)
 
     def _aplicar_max(self, *_):
         texto = self.var_max.get().strip().replace(",", ".")
@@ -359,19 +297,20 @@ class App(tk.Tk):
             return
         self.refresh()
 
-    def _editar_creditos(self, materia: str) -> None:
+    def _editar_creditos(self, materia):
         actual = self.estado.creditos.get(materia)
         nuevo = simpledialog.askfloat(
-            "Créditos", f"Créditos de {materia} (ahora: "
-            f"{'SN' if actual is None else f'{actual:g}'})\n"
+            "Créditos",
+            f"Créditos {materia} (ahora: {'SN' if actual is None else f'{actual:g}'})\n"
             f"Escribe -1 para regresarla a SN:",
-            initialvalue=actual or 0, parent=self)
+            initialvalue=actual or 0,
+            parent=self,
+        )
         if nuevo is not None:
             self.estado.fijar_creditos(materia, None if nuevo < 0 else nuevo)
             self.refresh()
 
-    def _confirmar(self, titulo: str, mensaje: str) -> bool:
-        """Diálogo con botones Continuar / Cancelar."""
+    def _confirmar(self, titulo, mensaje):
         dlg = tk.Toplevel(self)
         dlg.title(titulo)
         dlg.resizable(False, False)
@@ -381,20 +320,18 @@ class App(tk.Tk):
         botones = ttk.Frame(dlg)
         botones.pack(pady=(0, 12))
 
-        def responder(ok: bool):
+        def responder(ok):
             respuesta["ok"] = ok
             dlg.destroy()
 
-        ttk.Button(botones, text="Continuar",
-                   command=lambda: responder(True)).pack(side="left", padx=6)
-        ttk.Button(botones, text="Cancelar",
-                   command=lambda: responder(False)).pack(side="left", padx=6)
+        ttk.Button(botones, text="Continuar", command=lambda: responder(True)).pack(side="left", padx=6)
+        ttk.Button(botones, text="Cancelar", command=lambda: responder(False)).pack(side="left", padx=6)
         dlg.bind("<Escape>", lambda e: responder(False))
         dlg.transient(self)
         self.wait_window(dlg)
         return respuesta["ok"]
 
-    def _toggle_opcion(self, op_id: str) -> None:
+    def _toggle_opcion(self, op_id):
         e = self.estado
         if op_id in e.rama().seleccion:
             e.quitar(op_id)
@@ -404,37 +341,65 @@ class App(tk.Tk):
             total, _ = e.total_creditos()
             if e.max_creditos is not None and total + cred > e.max_creditos:
                 if not self._confirmar(
-                        "Créditos excedidos",
-                        f"Estás superando tus créditos autorizados:\n"
-                        f"{total + cred:g} de {e.max_creditos:g} permitidos.\n\n"
-                        f"¿Quieres continuar?"):
+                    "Créditos excedidos",
+                    f"Estás superando {total + cred:g} de {e.max_creditos:g} permitidos.\n\n¿Quieres continuar?",
+                ):
                     return
             e.agregar(op_id)
         self.refresh()
 
-    def _toggle_favorito(self, profesor: str) -> None:
+    def _toggle_favorito(self, profesor):
         if profesor in self.estado.favoritos:
             self.estado.favoritos.discard(profesor)
         else:
             self.estado.favoritos.add(profesor)
         self.refresh()
 
-    def _quitar_propia(self, op_id: str) -> None:
+    def _quitar_propia(self, op_id):
         if messagebox.askyesno("Eliminar bloque", "¿Eliminar este bloque propio?"):
             self.estado.quitar_propia(op_id)
             self.refresh()
 
-    def _cambiar_rama(self, rama_id: int) -> None:
+    def _cambiar_rama(self, rama_id):
         self.estado.rama_actual = rama_id
         self.refresh()
 
-    def _cerrar(self) -> None:
+    def _eliminar_rama(self, rama_id):
+        if not messagebox.askyesno("Eliminar rama", "¿Eliminar esta rama y todas sus hijas?"):
+            return
+        self.estado.eliminar_rama(rama_id)
+        self.refresh()
+
+    def _limpiar_todo(self):
+        if not messagebox.askyesno("Limpiar todo", "Se borrarán todas las selecciones, ramas y favoritos.\n¿Continuar?"):
+            return
+        e = self.estado
+        e.ramas = {1: Rama(1, "Principal")}
+        e.rama_actual = 1
+        e.favoritos.clear()
+        e.necesarias.clear()
+        e.colapsadas.clear()
+        e.max_creditos = None
+        self.var_max.set("")
+        self.refresh()
+
+    def _toggle_lista(self):
+        if self._lista_visible:
+            self._paned.forget(self._lista_frame)
+            self.btn_lista.config(text="Mostrar lista")
+            self.btn_lista_icon.config(text=FA.EYE)
+        else:
+            self._paned.insert(0, self._lista_frame, weight=2)
+            self.btn_lista.config(text="Ocultar lista")
+            self.btn_lista_icon.config(text=FA.EYE_SLASH)
+        self._lista_visible = not self._lista_visible
+
+    def _cerrar(self):
         self.estado.guardar()
         self.destroy()
 
     # ------------------------------------------------------------ refresh
-    def refresh(self) -> None:
-        self.bind_all("<MouseWheel>", self._rueda_global)
+    def refresh(self):
         self.estado.guardar()
         self._refrescar_contadores()
         self._refrescar_lista()
@@ -442,7 +407,7 @@ class App(tk.Tk):
         self._dibujar_horario()
         self._refrescar_ramas()
 
-    def _refrescar_inscritos(self) -> None:
+    def _refrescar_inscritos(self):
         for w in self.panel_insc.winfo_children():
             w.destroy()
         e = self.estado
@@ -451,42 +416,46 @@ class App(tk.Tk):
                   font=("Segoe UI", 11, "bold"), padding=(8, 6)).pack(anchor="w")
 
         for op in sel:
-            color = e.colores.get(op.materia, "#DDD")
-            fila = tk.Frame(self.panel_insc, bg="white", bd=1, relief="solid")
+            color = e.colores.get(op.materia, Colors.DEFAULT)
+            fila = tk.Frame(self.panel_insc, bg=Colors.WHITE, bd=1, relief="solid")
             fila.pack(fill="x", padx=6, pady=2)
             tk.Frame(fila, bg=color, width=6).pack(side="left", fill="y")
-            btn_x = tk.Label(fila, text="✕", bg="white", fg="#C62828",
-                             font=("Segoe UI", 10, "bold"), cursor="hand2", padx=6)
+            btn_x = tk.Label(fila, text=FA.TIMES, bg=Colors.WHITE, fg=Colors.RED,
+                             font=(FONT_SOLID, 10), cursor="hand2", padx=6)
             btn_x.pack(side="right")
             btn_x.bind("<Button-1>", lambda ev, i=op.id: self._toggle_opcion(i))
-            marco = tk.Frame(fila, bg="white")
+            marco = tk.Frame(fila, bg=Colors.WHITE)
             marco.pack(side="left", fill="x", expand=True, padx=4, pady=2)
             nombre = op.materia if len(op.materia) < 30 else f"{op.materia[:29]}…"
-            tk.Label(marco, text=nombre, bg="white", anchor="w",
+            tk.Label(marco, text=nombre, bg=Colors.WHITE, anchor="w",
                      font=("Segoe UI", 9, "bold")).pack(fill="x")
             cred = e.creditos.get(op.materia)
             detalle = f"{op.grupo} · {'SN' if cred is None else f'{cred:g} cr'}"
-            tk.Label(marco, text=detalle, bg="white", anchor="w", fg="#546E7A",
+            tk.Label(marco, text=detalle, bg=Colors.WHITE, anchor="w", fg=Colors.GRAY_TEXT,
                      font=("Segoe UI", 8)).pack(fill="x")
 
         if e.necesarias:
             faltan = e.faltantes()
             ttk.Separator(self.panel_insc).pack(fill="x", padx=6, pady=6)
             if faltan:
-                ttk.Label(self.panel_insc, text=f"⚠ Faltan del check ({len(faltan)}):",
-                          foreground="#C62828", font=("Segoe UI", 10, "bold"),
-                          padding=(8, 0)).pack(anchor="w")
+                ico = tk.Label(self.panel_insc, text=FA.EXCLAMATION_TRIANGLE,
+                               font=(FONT_SOLID, 10), fg=Colors.RED)
+                ico.pack(anchor="w", padx=(8, 0))
+                lbl = ttk.Label(self.panel_insc, text=f"Faltan del check ({len(faltan)}):",
+                          foreground=Colors.RED, font=("Segoe UI", 10, "bold"),
+                          padding=(2, 0))
+                lbl.pack(anchor="w")
                 for m in faltan:
                     nombre = m if len(m) < 32 else f"{m[:31]}…"
                     ttk.Label(self.panel_insc, text=f"• {nombre}",
-                              foreground="#C62828", font=("Segoe UI", 8),
+                              foreground=Colors.RED, font=("Segoe UI", 8),
                               padding=(14, 0)).pack(anchor="w")
             else:
-                ttk.Label(self.panel_insc, text="✔ Check completo",
-                          foreground="#2E7D32", font=("Segoe UI", 10, "bold"),
+                ttk.Label(self.panel_insc, text="Check completado",
+                          foreground=Colors.GREEN, font=("Segoe UI", 10, "bold"),
                           padding=(8, 0)).pack(anchor="w")
 
-    def _refrescar_contadores(self) -> None:
+    def _refrescar_contadores(self):
         e = self.estado
         sel = e.seleccionadas()
         total, sin_cred = e.total_creditos()
@@ -496,9 +465,9 @@ class App(tk.Tk):
             cred += f" / {e.max_creditos:g}"
             excedido = total > e.max_creditos
         if sin_cred:
-            cred += f"  (⚠ {sin_cred} materia{'s' if sin_cred > 1 else ''} SN)"
+            cred += f"  ({sin_cred} materia{'s' if sin_cred > 1 else ''} SN)"
         self.lbl_contadores.config(
-            foreground="#C62828" if excedido else "#212121",
+            foreground=Colors.RED if excedido else Colors.BLACK,
             text=(f"Opciones disponibles: {len(e.disponibles())}   |   "
                   f"Materias: {len(sel)}   |   {cred}   |   "
                   f"Horas/sem: {e.total_horas():g}"))
@@ -507,15 +476,15 @@ class App(tk.Tk):
         else:
             faltan = len(e.faltantes())
             if faltan:
-                self.lbl_check.config(text=f"⚠ Faltan {faltan} del check   |",
-                                      foreground="#C62828")
+                self.lbl_check.config(text=f"Faltan {faltan} del check   |",
+                                      foreground=Colors.RED)
             else:
-                self.lbl_check.config(text="Check ✔   |", foreground="#2E7D32")
+                self.lbl_check.config(text="Check   |", foreground=Colors.GREEN)
         if self.focus_get() is None or self.focus_get().winfo_class() != "TEntry":
             self.var_max.set("" if e.max_creditos is None else f"{e.max_creditos:g}")
 
     # ------------------------------------------------------- lista lateral
-    def _pasa_filtro(self, op) -> bool:
+    def _pasa_filtro(self, op):
         f = self.filtros
         texto = f["texto"].lower().strip()
         if texto and texto not in f"{op.materia} {op.profesor} {op.grupo}".lower():
@@ -544,7 +513,7 @@ class App(tk.Tk):
                 return False
         return True
 
-    def _click_lista(self, _evento) -> None:
+    def _click_lista(self, evento):
         accion = self._accion_bajo_cursor()
         if not accion:
             return
@@ -564,19 +533,41 @@ class App(tk.Tk):
                 self.estado.colapsadas.add(dato)
             self._refrescar_lista()
 
-    def _click_der_lista(self, _evento) -> None:
+    def _click_der_lista(self, evento):
         accion = self._accion_bajo_cursor()
         if accion and accion[0] in ("hdr", "prof"):
             self._editar_creditos(accion[1])
 
-    def _accion_bajo_cursor(self) -> tuple[str, str] | None:
+    def _click_horario(self, evento):
+        for item in self.canvas_horario.find_withtag("current"):
+            for tag in self.canvas_horario.gettags(item):
+                op_id = self._bloques_horario.get(tag)
+                if op_id:
+                    candados = self.estado.rama().candados
+                    if op_id in candados:
+                        candados.remove(op_id)
+                    else:
+                        candados.append(op_id)
+                    self.refresh()
+                    return
+
+    def _accion_bajo_cursor(self):
         for item in self.canvas_lista.find_withtag("current"):
             for tag in self.canvas_lista.gettags(item):
                 if tag in self._acciones_lista:
                     return self._acciones_lista[tag]
         return None
 
-    def _refrescar_lista(self) -> None:
+    def _activar_rueda(self, activo):
+        if activo:
+            self.canvas_lista.bind_all("<MouseWheel>", self._rueda_lista)
+        else:
+            self.canvas_lista.unbind_all("<MouseWheel>")
+
+    def _rueda_lista(self, evento):
+        self.canvas_lista.yview_scroll(-3 if evento.delta > 0 else 3, "units")
+
+    def _refrescar_lista(self):
         cv = self.canvas_lista
         vista_y = cv.yview()[0]
         cv.delete("all")
@@ -586,41 +577,37 @@ class App(tk.Tk):
         ancho = max(cv.winfo_width(), 200)
 
         if not e.opciones:
-            cv.create_text(ancho / 2, 60, text="Carga el TXT del SAES\npara empezar 📂",
-                           fill=GRIS, font=("Segoe UI", 11), justify="center")
+            cv.create_text(ancho / 2, 60, text="Carga el TXT del SAES\npara empezar",
+                           fill=Colors.GRAY_DARK, font=("Segoe UI", 11), justify="center")
             return
 
         y = 4
         n = 0
         for materia in e.orden_materias:
             ops = [op for op in e.opciones_de(materia) if self._pasa_filtro(op)]
-            compatibles = [op for op in ops
-                           if op.id in seleccion or e.es_compatible(op)]
+            compatibles = [op for op in ops if op.id in seleccion or e.es_compatible(op)]
             if self.filtros["ocultar_incompatibles"]:
                 ops = compatibles
             if not ops:
                 continue
-            color = e.colores.get(materia, "#DDD")
+            color = e.colores.get(materia, Colors.DEFAULT)
             cred = e.creditos.get(materia)
             etiqueta_cred = "SN" if cred is None else f"{cred:g} cr"
 
-            # cabecera de materia (click = plegar/desplegar)
             plegada = materia in e.colapsadas
             tag_h, tag_p = f"h{n}", f"p{n}"
             n += 1
             self._acciones_lista[tag_h] = ("hdr", materia)
             self._acciones_lista[tag_p] = ("prof", materia)
             y += 6
-            cv.create_rectangle(4, y, ancho - 4, y + 26, fill=color, outline=color,
-                                tags=(tag_h,))
+            cv.create_rectangle(4, y, ancho - 4, y + 26, fill=color, outline=color, tags=(tag_h,))
             flecha = "▸" if plegada else "▾"
             texto_h = f"{flecha} {materia}  ({len(compatibles)}/{len(ops)}) · {etiqueta_cred}"
             if len(texto_h) > 42:
-                texto_h = f"{texto_h[:41]}…"
+                texto_h = f"{texto_h[:41]}..."
             cv.create_text(10, y + 13, text=texto_h, anchor="w",
                            font=("Segoe UI", 9, "bold"), tags=(tag_h,))
-            cv.create_text(ancho - 18, y + 13, text="👥", font=("Segoe UI", 10),
-                           tags=(tag_p,))
+            cv.create_text(ancho - 18, y + 13, text=FA.USERS, font=(FONT_SOLID, 10), tags=(tag_p,))
             y += 26
             if plegada:
                 continue
@@ -629,20 +616,19 @@ class App(tk.Tk):
                 elegida = op.id in seleccion
                 compatible = elegida or e.es_compatible(op)
                 if elegida:
-                    bg, fg, borde, grosor = color, "#212121", "#455A64", 2
+                    bg, fg, borde, grosor = color, Colors.BLACK, Colors.BORDER_DARK, 2
                 elif compatible:
-                    bg, fg, borde, grosor = "white", "#212121", "#B0BEC5", 1
+                    bg, fg, borde, grosor = Colors.WHITE, Colors.BLACK, Colors.BORDER_MED, 1
                 else:
-                    bg, fg, borde, grosor = "#ECEFF1", "#B0BEC5", "#CFD8DC", 1
+                    bg, fg, borde, grosor = Colors.GRAY_LIGHTER, Colors.BORDER_MED, Colors.BORDER_LIGHT, 1
 
                 tag_op = f"o{n}"
                 n += 1
                 if compatible:
                     self._acciones_lista[tag_op] = ("op", op.id)
                 y += 2
-                cv.create_rectangle(10, y, ancho - 8, y + 46, fill=bg,
-                                    outline=borde, width=grosor, tags=(tag_op,))
-                marca = "✔ " if elegida else ("" if compatible else "✖ ")
+                cv.create_rectangle(10, y, ancho - 8, y + 46, fill=bg, outline=borde, width=grosor, tags=(tag_op,))
+                marca = "  " if elegida else ("" if compatible else "  ")
                 cv.create_text(16, y + 9, text=f"{marca}{op.grupo}", anchor="w",
                                fill=fg, font=("Segoe UI", 9, "bold"), tags=(tag_op,))
                 cv.create_text(16, y + 23, text=op.profesor[:46], anchor="w",
@@ -654,23 +640,20 @@ class App(tk.Tk):
                 n += 1
                 if op.propia:
                     self._acciones_lista[tag_ex] = ("del", op.id)
-                    cv.create_text(ancho - 22, y + 10, text="🗑",
-                                   font=("Segoe UI", 9), tags=(tag_ex,))
+                    cv.create_text(ancho - 22, y + 10, text=FA.TIMES, font=(FONT_SOLID, 9), tags=(tag_ex,))
                 else:
                     fav = op.profesor in self.estado.favoritos
                     self._acciones_lista[tag_ex] = ("fav", op.profesor)
-                    cv.create_text(ancho - 22, y + 10, text="★" if fav else "☆",
-                                   fill="#F9A825" if fav else "#90A4AE",
-                                   font=("Segoe UI", 11), tags=(tag_ex,))
+                    cv.create_text(ancho - 22, y + 10, text=FA.STAR,
+                                   fill=Colors.AMBER if fav else Colors.GRAY_MED,
+                                   font=(FONT_SOLID if fav else FONT_REGULAR, 11), tags=(tag_ex,))
                 y += 46
 
         cv.configure(scrollregion=(0, 0, ancho, y + 8))
         cv.yview_moveto(vista_y)
 
     # ---------------------------------------------------------- horario
-    def _dibujar_horario(self, canvas: tk.Canvas | None = None,
-                         rama=None, mini: bool = False,
-                         dims: tuple[int, int] | None = None) -> None:
+    def _dibujar_horario(self, canvas=None, rama=None, mini=False, dims=None):
         cv = canvas or self.canvas_horario
         rama = rama or self.estado.rama()
         if not cv.winfo_exists():
@@ -687,37 +670,35 @@ class App(tk.Tk):
         total_min = (HORA_FIN - HORA_INI) * 60
         escala = (alto - m_sup - m_inf) / total_min
 
-        def y_de(minutos: int) -> float:
+        def y_de(minutos):
             return m_sup + (minutos - HORA_INI * 60) * escala
 
-        # rejilla
         for h in range(HORA_INI, HORA_FIN + 1):
             y = y_de(h * 60)
-            cv.create_line(m_izq, y, ancho - 6, y, fill="#E0E0E0")
+            cv.create_line(m_izq, y, ancho - 6, y, fill=Colors.GRAY_LIGHT)
             if not mini:
                 cv.create_text(m_izq - 6, y, text=f"{h}:00", anchor="e",
-                               font=("Segoe UI", 8), fill=GRIS)
+                               font=("Segoe UI", 8), fill=Colors.GRAY_DARK)
         for d in range(6):
             x = m_izq + d * col
-            cv.create_line(x, m_sup, x, alto - m_inf, fill="#BDBDBD")
+            cv.create_line(x, m_sup, x, alto - m_inf, fill=Colors.GRAY)
         if not mini:
             for d, nombre in enumerate(DIAS_LARGO):
                 cv.create_text(m_izq + d * col + col / 2, m_sup / 2, text=nombre,
-                               font=("Segoe UI", 10, "bold"), fill="#37474F")
+                               font=("Segoe UI", 10, "bold"), fill=Colors.TEXT_SECONDARY)
 
-        # bloques
         if not mini:
             self._bloques_horario.clear()
-        candados = set(rama.candados)
         nb = 0
+
         for op in self.estado.seleccionadas(rama):
-            color = self.estado.colores.get(op.materia, "#DDD")
+            color = self.estado.colores.get(op.materia, Colors.DEFAULT)
             for s in op.sesiones:
                 x1 = m_izq + s.dia * col + 2
                 x2 = m_izq + (s.dia + 1) * col - 2
                 y1, y2 = y_de(s.inicio), y_de(s.fin)
                 extra = {"dash": (4, 2)} if op.propia else {}
-                con_candado = op.id in candados
+                con_candado = op.id in rama.candados
                 etiquetas = ()
                 if not mini:
                     tag_b = f"blk{nb}"
@@ -725,7 +706,7 @@ class App(tk.Tk):
                     self._bloques_horario[tag_b] = op.id
                     etiquetas = (tag_b,)
                 cv.create_rectangle(x1, y1, x2, y2, fill=color,
-                                    outline="#455A64",
+                                    outline=Colors.BORDER_DARK,
                                     width=3 if con_candado else 1,
                                     tags=etiquetas, **extra)
                 if not mini and con_candado:
@@ -741,39 +722,48 @@ class App(tk.Tk):
                                    width=x2 - x1 - 6, tags=etiquetas)
 
     # ------------------------------------------------------------- ramas
-    def _refrescar_ramas(self) -> None:
+    def _refrescar_ramas(self):
         for w in self.marco_ramas.winfo_children():
             w.destroy()
         e = self.estado
         actual = e.rama()
         self.lbl_rama.config(text=f"Rama: {actual.nombre}")
-
         for rama in e.familia():
-            es_actual = rama.id == e.rama_actual
-            if rama.padre is None and rama.id != actual.id:
+            relacion = "actual"
+            if rama.id == e.rama_actual:
+                relacion = "actual"
+            elif rama.padre is None and rama.id != actual.id:
                 relacion = "padre" if actual.padre == rama.id else "raíz"
-            elif rama.padre == actual.padre and not es_actual:
+            elif rama.padre == actual.padre:
                 relacion = "hermana"
             elif rama.padre == actual.id:
                 relacion = "hija"
             elif actual.padre == rama.id:
                 relacion = "padre"
-            else:
-                relacion = "actual"
+            es_actual = rama.id == e.rama_actual
             celda = tk.Frame(self.marco_ramas,
                              highlightthickness=2,
-                             highlightbackground="#33691E" if es_actual else "#CFD8DC")
+                             highlightbackground=Colors.HIGHLIGHT_OUTLINE if es_actual else Colors.BORDER_LIGHT)
             celda.pack(side="left", padx=3)
-            mini = tk.Canvas(celda, width=180, height=112, bg="white",
+            mini = tk.Canvas(celda, width=180, height=112, bg=Colors.WHITE,
                              highlightthickness=0, cursor="hand2")
             mini.pack()
-            tk.Label(celda, text=f"{rama.nombre} ({relacion})",
-                     font=("Segoe UI", 8, "bold" if es_actual else "normal")).pack()
+            lbl_nombre = tk.Label(celda, text=f"{rama.nombre} ({relacion})",
+                     font=("Segoe UI", 8, "bold" if es_actual else "normal"))
+            lbl_nombre.pack()
             mini.bind("<Button-1>", lambda ev, r=rama.id: self._cambiar_rama(r))
             self._dibujar_horario(mini, rama, mini=True, dims=(180, 112))
 
+            if rama.id != 1:
+                btn_x = tk.Label(celda, text=FA.TIMES, fg=Colors.RED,
+                                 font=(FONT_SOLID, 9), cursor="hand2", padx=4)
+                btn_x.place(relx=1.0, rely=0.0, x=-2, y=-2, anchor="ne")
+                btn_x.lower()
+                btn_x.bind("<Button-1>", lambda ev, r=rama.id: self._eliminar_rama(r))
+                celda.bind("<Enter>", lambda ev, b=btn_x: b.lift())
+                celda.bind("<Leave>", lambda ev, b=btn_x: b.lower())
 
-def main() -> None:
+def main():
     app = App()
     app.mainloop()
 

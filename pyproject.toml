@@ -1,6 +1,6 @@
 [project]
 name = "horario-saes"
-version = "1.0.0"
+version = "1.0.1"
 description = "Armador de horarios para el SAES: ramas, créditos, equivalencias y export a PDF/PNG"
 requires-python = ">=3.10"
 dependencies = ["pillow>=10"]
@@ -14,3 +14,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["horario_saes*"]
+
+[tool.setuptools.package-data]
+horario_saes = ["fonts/*.ttf"]

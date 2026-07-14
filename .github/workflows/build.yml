@@ -1,27 +1,54 @@
-name: build
+name: Compilar HorarioSAES
+
 on:
-  release:
-    types: [created]
+  push:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  binarios:
-    strategy:
-      matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+  build:
+    name: Compilar para ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: HorarioSAES-linux
+            pyinstaller_cmd: pyinstaller --noconsole --onefile --name="HorarioSAES-linux" --paths=. --hidden-import=PIL._tkinter_finder --add-data "horario_saes/fonts:horario_saes/fonts" horario_saes/main.py
+          - os: windows-latest
+            artifact_name: HorarioSAES-windows.exe
+            pyinstaller_cmd: pyinstaller --noconsole --onefile --name="HorarioSAES-windows" --paths=. --hidden-import=PIL._tkinter_finder --add-data "horario_saes/fonts;horario_saes/fonts" horario_saes/main.py
+          - os: macos-latest
+            artifact_name: HorarioSAES-macos.app
+            pyinstaller_cmd: pyinstaller --windowed --onefile --name="HorarioSAES-macos" --paths=. --hidden-import=PIL._tkinter_finder --add-data "horario_saes/fonts:horario_saes/fonts" horario_saes/main.py
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - run: pip install . pyinstaller
-      - run: pyinstaller --onefile --windowed --paths . --name HorarioSAES-${{ runner.os }} horario_saes/main.py
-      - uses: actions/upload-artifact@v4
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Compilar con PyInstaller
+        run: ${{ matrix.pyinstaller_cmd }}
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
         with:
-          name: HorarioSAES-${{ runner.os }}
-          path: dist/*
-      - uses: softprops/action-gh-release@v2
-        if: github.event_name == 'release'
-        with:
-          files: dist/*
+          name: ${{ matrix.os }}-build
+          path: |
+            dist/HorarioSAES-linux
+            dist/HorarioSAES-windows.exe
+            dist/HorarioSAES-macos.app
+            dist/HorarioSAES-macos
+          if-no-files-found: warn
