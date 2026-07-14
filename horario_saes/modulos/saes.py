@@ -5,11 +5,22 @@ El SAES es ASP.NET WebForms: cada página exige __VIEWSTATE/__EVENTVALIDATION,
 por eso todo va sobre una misma sesión de requests. Las rutas son iguales en
 casi todas las escuelas; algunas agregan o quitan pestañas.
 """
+import re
+
 import requests
 import urllib3
 from bs4 import BeautifulSoup
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+RE_CLAVE = re.compile(r"^[A-Z]\d{3}$")
+
+
+def _a_num(celda: str):
+    try:
+        return float(celda.replace(",", ".").strip())
+    except (ValueError, AttributeError):
+        return None
 
 # Rutas conocidas del SAES (relativas a la base de cada escuela)
 RUTA_LOGIN = "/"
@@ -135,12 +146,55 @@ class SesionSaes:
                 tablas.append(filas)
         return tablas
 
-    def horarios_txt(self) -> str:
-        """Convierte la página de horarios al formato txt (tabs) que ya parsea
-        la app: Grupo, Asignatura, Profesor, Edificio, Salón, Lun..Vie."""
+    # Filtros de la página de horarios (nombres reales verificados en UPIICSA)
+    F_CARRERA = "ctl00$mainCopy$Filtro$cboCarrera"
+    F_TURNO = "ctl00$mainCopy$Filtro$cboTurno"
+    F_PLAN = "ctl00$mainCopy$Filtro$cboPlanEstud"
+    F_PERIODOS = "ctl00$mainCopy$Filtro$lsNoPeriodos"
+    F_SECUENCIAS = "ctl00$mainCopy$lsSecuencias"
+    F_VISUALIZAR = "ctl00$mainCopy$cmdVisalizar"
+
+    def _post(self, ruta: str, base_html: str, extra: dict[str, str]) -> str:
+        datos = self._hidden(base_html)
+        datos.update(extra)
+        r = self.s.post(self._url(ruta), data=datos, timeout=25, verify=False)
+        r.raise_for_status()
+        return r.text
+
+    def carreras_horarios(self) -> list[tuple[str, str]]:
+        """(valor, nombre) de las carreras disponibles en horarios."""
         html = self._get(RUTA_HORARIOS)
+        sopa = BeautifulSoup(html, "html.parser")
+        sel = sopa.find("select", {"name": self.F_CARRERA})
+        if not sel:
+            return []
+        return [(o.get("value", ""), o.get_text(strip=True))
+                for o in sel.find_all("option") if o.get("value")]
+
+    def horarios_txt(self, carrera: str = "", turno: str = "M",
+                     plan: str = "", periodo: str = "1") -> str:
+        """Descarga la ocupabilidad de horarios y la vuelve al formato txt
+        (tabs) que ya parsea la app. El SAES exige elegir carrera, turno, plan
+        y periodo; carrera se auto-detecta si no se pasa.
+
+        NOTA: es un ASP.NET WebForms multi-postback; los nombres de campo están
+        verificados pero la estructura de la tabla renderizada puede variar por
+        escuela. Si algo no cuadra, usa 📂 Cargar TXT."""
+        html = self._get(RUTA_HORARIOS)
+        if not carrera:
+            cs = self.carreras_horarios()
+            carrera = cs[0][0] if cs else ""
+        # paso 1: elegir carrera (autopostback que carga plan/periodos/grupos)
+        h1 = self._post(RUTA_HORARIOS, html, {
+            "__EVENTTARGET": self.F_CARRERA, "__EVENTARGUMENT": "",
+            self.F_CARRERA: carrera})
+        # paso 2: visualizar con todos los filtros
+        h2 = self._post(RUTA_HORARIOS, h1, {
+            self.F_CARRERA: carrera, self.F_TURNO: turno,
+            self.F_PLAN: plan, self.F_PERIODOS: periodo,
+            self.F_SECUENCIAS: "Todo", self.F_VISUALIZAR: "Visualizar información"})
         lineas = []
-        for tabla in self._tablas(html):
+        for tabla in self._tablas(h2):
             for fila in tabla:
                 if len(fila) >= 7:
                     lineas.append("\t".join(fila))
@@ -155,22 +209,19 @@ class SesionSaes:
         return "\n".join(lineas)
 
     def kardex_cursadas(self) -> list[str]:
-        """Materias con calificación aprobatoria en el kardex."""
+        """Materias aprobadas en el kardex. Estructura real (UPIICSA, verificada):
+        cada semestre es una tabla; las filas de materia son
+        [clave, materia, fecha, periodo, forma_eval, calificación].
+        La clave es tipo N101 y la calificación es la última celda."""
         html = self._get(RUTA_KARDEX)
         cursadas = []
         for tabla in self._tablas(html):
             for fila in tabla:
-                if len(fila) < 3:
+                if len(fila) < 3 or not RE_CLAVE.match(fila[0].strip()):
                     continue
-                nombre = max(fila, key=len)
-                nota = None
-                for celda in fila:
-                    c = celda.replace(",", ".").strip()
-                    try:
-                        nota = float(c)
-                    except ValueError:
-                        continue
-                if nota is not None and nota >= 6 and len(nombre) > 5:
+                nombre = fila[1].strip()
+                nota = _a_num(fila[-1])
+                if nombre and nota is not None and nota >= 6:
                     cursadas.append(nombre)
         return cursadas
 
