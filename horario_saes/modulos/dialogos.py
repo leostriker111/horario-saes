@@ -1,11 +1,143 @@
 import tkinter as tk
+import webbrowser
 from pathlib import Path
+from urllib.parse import quote_plus
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from horario_saes.modulos.exportar import exportar_ramas
 from horario_saes.modulos.modelo import Estado
 from horario_saes.modulos.parser_saes import DIAS, Sesion, fmt_hora
 from horario_saes.modulos.reloj import RelojPicker
+
+
+class DialogoSaes(tk.Toplevel):
+    """Login al SAES (con captcha) y descarga de horarios, equivalencias y
+    kardex directo a la app. La app NO guarda tu contraseña."""
+
+    def __init__(self, master, estado: Estado, al_cargar):
+        super().__init__(master)
+        self.title("Cargar desde el SAES")
+        self.resizable(False, False)
+        self.estado = estado
+        self.al_cargar = al_cargar
+        self.sesion = None
+        self._img = None
+
+        from horario_saes.modulos.saes import ESCUELAS_NS, ESCUELAS_NMS
+        cuerpo = ttk.Frame(self, padding=14)
+        cuerpo.pack()
+
+        ttk.Label(cuerpo, text="Escuela:").grid(row=0, column=0, sticky="w")
+        self.var_esc = tk.StringVar(value="UPIICSA")
+        vals = list(ESCUELAS_NS) + ["──────────"] + list(ESCUELAS_NMS)
+        ttk.Combobox(cuerpo, textvariable=self.var_esc, values=vals,
+                     state="readonly", width=30).grid(row=0, column=1, pady=3)
+
+        ttk.Label(cuerpo, text="Boleta:").grid(row=1, column=0, sticky="w")
+        self.ent_bol = ttk.Entry(cuerpo, width=32)
+        self.ent_bol.grid(row=1, column=1, pady=3)
+        ttk.Label(cuerpo, text="Contraseña:").grid(row=2, column=0, sticky="w")
+        self.ent_pwd = ttk.Entry(cuerpo, width=32, show="•")
+        self.ent_pwd.grid(row=2, column=1, pady=3)
+
+        self.lbl_captcha = ttk.Label(cuerpo, text="(carga el captcha ▶)")
+        self.lbl_captcha.grid(row=3, column=0, columnspan=2, pady=(8, 2))
+        ttk.Button(cuerpo, text="🔄 Cargar / refrescar captcha",
+                   command=self._cargar_captcha).grid(row=4, column=0, columnspan=2)
+        ttk.Label(cuerpo, text="Captcha:").grid(row=5, column=0, sticky="w")
+        self.ent_cap = ttk.Entry(cuerpo, width=32)
+        self.ent_cap.grid(row=5, column=1, pady=3)
+
+        self.var_qh = tk.BooleanVar(value=False)
+        self.var_qe = tk.BooleanVar(value=False)
+        self.var_qk = tk.BooleanVar(value=True)
+        ttk.Checkbutton(cuerpo, text="Marcar cursadas desde mi kardex (recomendado)",
+                        variable=self.var_qk).grid(row=6, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(cuerpo, text="Horarios (experimental — mejor usa Nube o el bookmarklet)",
+                        variable=self.var_qh).grid(row=7, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(cuerpo, text="Equivalencias y créditos (experimental)",
+                        variable=self.var_qe).grid(row=8, column=0, columnspan=2, sticky="w")
+        ttk.Label(cuerpo, foreground="#546E7A", font=("Segoe UI", 8), wraplength=300,
+                  justify="left", text="Los horarios se bajan mejor por 'Cargar datos → "
+                  "Nube', o con el bookmarklet. El login aquí sirve sobre todo para "
+                  "marcar tus materias cursadas.").grid(row=9, column=0, columnspan=2,
+                                                        sticky="w", pady=(2, 0))
+
+        self.lbl_estado = ttk.Label(cuerpo, foreground="#546E7A", wraplength=300,
+                                    justify="left")
+        self.lbl_estado.grid(row=10, column=0, columnspan=2, pady=(6, 2))
+
+        botones = ttk.Frame(cuerpo)
+        botones.grid(row=11, column=0, columnspan=2, pady=(6, 0))
+        self.btn_entrar = ttk.Button(botones, text="Entrar y descargar",
+                                     command=self._entrar)
+        self.btn_entrar.pack(side="left", padx=4)
+        ttk.Button(botones, text="Cerrar", command=self.destroy).pack(side="left", padx=4)
+
+    def _escuela(self):
+        esc = self.var_esc.get()
+        return None if esc.startswith("─") else esc
+
+    def _cargar_captcha(self) -> None:
+        esc = self._escuela()
+        if not esc:
+            return
+        from horario_saes.modulos.saes import SesionSaes
+        try:
+            import io
+            from PIL import Image, ImageTk
+            self.sesion = SesionSaes(esc)
+            datos = self.sesion.captcha()
+            img = Image.open(io.BytesIO(datos))
+            self._img = ImageTk.PhotoImage(img)
+            self.lbl_captcha.config(image=self._img, text="")
+            self.lbl_estado.config(text="Captcha cargado. Escribe boleta, "
+                                        "contraseña y el texto del captcha.",
+                                   foreground="#546E7A")
+        except Exception as ex:
+            self.lbl_estado.config(text=f"No pude abrir el SAES: {ex}",
+                                   foreground="#C62828")
+
+    def _entrar(self) -> None:
+        from horario_saes.modulos.saes import ErrorSaes
+        if self.sesion is None:
+            self.lbl_estado.config(text="Primero carga el captcha.",
+                                   foreground="#C62828")
+            return
+        self.btn_entrar.config(state="disabled")
+        self.lbl_estado.config(text="Entrando…", foreground="#546E7A")
+        self.update_idletasks()
+        try:
+            ok = self.sesion.login(self.ent_bol.get().strip(),
+                                   self.ent_pwd.get(), self.ent_cap.get().strip())
+            if not ok:
+                raise ErrorSaes("No entró (revisa datos o captcha)")
+            self._descargar()
+        except Exception as ex:
+            self.lbl_estado.config(text=f"Error: {ex}", foreground="#C62828")
+            self.btn_entrar.config(state="normal")
+            self._cargar_captcha()
+
+    def _descargar(self) -> None:
+        import tempfile
+        from pathlib import Path as _P
+        e = self.estado
+        resumen = []
+        if self.var_qh.get():
+            txt = self.sesion.horarios_txt()
+            equiv = self.sesion.equivalencias_txt() if self.var_qe.get() else ""
+            tmp = _P(tempfile.gettempdir()) / "saes_horarios.txt"
+            tmp.write_text(txt + "\n" + equiv, encoding="utf-8")
+            n = e.cargar_txt(str(tmp))
+            resumen.append(f"{n} grupos")
+        if self.var_qk.get():
+            cursadas = self.sesion.kardex_cursadas()
+            e.cursadas |= set(cursadas)
+            resumen.append(f"{len(cursadas)} cursadas")
+        self.lbl_estado.config(text="✔ Listo: " + ", ".join(resumen),
+                               foreground="#2E7D32")
+        self.al_cargar()
+        self.after(1200, self.destroy)
 
 
 class DialogoExportar(tk.Toplevel):
@@ -434,8 +566,14 @@ class VistaProfesores(tk.Toplevel):
         self.al_cambiar = al_cambiar
 
         color = estado.colores.get(materia, "#DDD")
-        tk.Label(self, text=materia, bg=color, font=("Segoe UI", 12, "bold"),
-                 pady=6).pack(fill="x")
+        cab = tk.Frame(self, bg=color)
+        cab.pack(fill="x")
+        tk.Label(cab, text=materia, bg=color, font=("Segoe UI", 12, "bold"),
+                 pady=6).pack(side="left", expand=True)
+        aj = tk.Label(cab, text="⚙ foros", bg=color, cursor="hand2",
+                      font=("Segoe UI", 9), padx=8)
+        aj.pack(side="right")
+        aj.bind("<Button-1>", lambda e: self._editar_foros())
 
         contenedor = ttk.Frame(self)
         contenedor.pack(fill="both", expand=True)
@@ -448,7 +586,8 @@ class VistaProfesores(tk.Toplevel):
         self.canvas.configure(yscrollcommand=barra.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         barra.pack(side="right", fill="y")
-        self.canvas.bind_all("<MouseWheel>", self._rueda)
+        self.bind("<Enter>", lambda e: self.canvas.bind_all(
+            "<MouseWheel>", self._rueda))
         self.bind("<Destroy>", lambda e: self.canvas.unbind_all("<MouseWheel>")
                   if e.widget is self else None)
         self._llenar()
@@ -471,6 +610,9 @@ class VistaProfesores(tk.Toplevel):
                                 fg="#F9A825" if fav else "#B0BEC5")
             estrella.pack(side="left")
             estrella.bind("<Button-1>", lambda e, p=profesor: self._toggle(p))
+            lupa = tk.Label(fila, text="🔎", cursor="hand2", font=("Segoe UI", 11))
+            lupa.pack(side="left", padx=(4, 0))
+            lupa.bind("<Button-1>", lambda e, p=profesor: self._buscar_foros(p))
             marco = ttk.Frame(fila)
             marco.pack(side="left", fill="x", expand=True, padx=6)
             ttk.Label(marco, text=profesor, font=("Segoe UI", 10, "bold")).pack(anchor="w")
@@ -480,6 +622,31 @@ class VistaProfesores(tk.Toplevel):
         total = len(profes)
         ttk.Label(self.interior, text=f"{total} profesor(es)",
                   font=("Segoe UI", 9, "italic")).pack(anchor="w", padx=8, pady=6)
+
+    def _buscar_foros(self, profesor: str) -> None:
+        for plantilla in self.estado.foros:
+            url = plantilla.replace("{profesor}", quote_plus(profesor.strip()))
+            webbrowser.open(url)
+
+    def _editar_foros(self) -> None:
+        dlg = tk.Toplevel(self)
+        dlg.title("Foros de profesores")
+        ttk.Label(dlg, padding=(10, 6), justify="left", text=(
+            "Una liga por línea; {profesor} se sustituye por el nombre.\n"
+            "Ej: https://foroupiicsa.net/diccionario/buscar/{profesor}"
+        )).pack(anchor="w")
+        caja = tk.Text(dlg, width=70, height=6, font=("Consolas", 9))
+        caja.pack(padx=10)
+        caja.insert("1.0", "\n".join(self.estado.foros))
+
+        def guardar():
+            lineas = [l.strip() for l in caja.get("1.0", "end").splitlines()
+                      if l.strip()]
+            self.estado.foros = lineas or self.estado.foros
+            self.al_cambiar()
+            dlg.destroy()
+
+        ttk.Button(dlg, text="Guardar", command=guardar).pack(pady=8)
 
     def _toggle(self, profesor: str) -> None:
         if profesor in self.estado.favoritos:

@@ -5,8 +5,11 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from horario_saes.modulos.dialogos import (DialogoBloque, DialogoCheck, DialogoExportar,
                               DialogoFiltro, VistaArbol, VistaPlan, VistaProfesores)
-from horario_saes.modulos.modelo import Estado
+from horario_saes.modulos.modelo import Estado, Rama
 from horario_saes.modulos.parser_saes import DIAS_LARGO
+from horario_saes.modulos.iconos import FA, cargar_fuentes, crear_imagen_icono
+from horario_saes.config import get_config
+from horario_saes.modulos.document_loader import DocumentLoader, LoadError
 
 RUTA_SESION = Path.home() / ".horario_saes" / "sesion.json"
 _vieja = Path(__file__).resolve().parent.parent / "datos" / "sesion.json"
@@ -23,6 +26,11 @@ class App(tk.Tk):
         self.title("Horarios SAES")
         self.geometry("1280x760")
         self.minsize(980, 600)
+        cargar_fuentes(self)
+        self.config_datos = get_config()
+        self.loader = DocumentLoader(self.config_datos)
+        self._iconos: dict[str, tk.PhotoImage] = {}   # refs para que no las borre el GC
+        self._lista_visible = True
 
         self.estado = Estado(RUTA_SESION)
         self.filtros = {"texto": "", "solo_favoritos": False,
@@ -33,6 +41,7 @@ class App(tk.Tk):
         self._hist: list[frozenset] = []              # historial ◀ ▶ del random
         self._hist_i = -1
         self._ventanas: dict[str, tk.Toplevel] = {}
+        self._ultima_rama: int | None = None
 
         self._construir_toolbar()
         self._construir_cuerpo()
@@ -43,40 +52,81 @@ class App(tk.Tk):
             self.after(50, self.refresh)
 
     # ------------------------------------------------------------ layout
+    def _btn(self, parent, icono, texto, command):
+        try:
+            img = crear_imagen_icono(icono, color="#212121")
+            self._iconos[texto] = img
+            b = ttk.Button(parent, text=texto, image=img, compound="left",
+                           command=command)
+        except Exception:
+            b = ttk.Button(parent, text=texto, command=command)
+        b.pack(side="left", padx=2)
+        self._botones.append((b, texto))
+        return b
+
     def _construir_toolbar(self) -> None:
+        self._botones: list = []
         barra = ttk.Frame(self, padding=(8, 6))
         barra.pack(fill="x")
-        ttk.Button(barra, text="📂 Cargar TXT", command=self._cargar_txt).pack(side="left", padx=2)
-        ttk.Button(barra, text="🔍 Filtrar", command=self._abrir_filtro).pack(side="left", padx=2)
-        ttk.Button(barra, text="🌿 Bifurcar", command=self._bifurcar).pack(side="left", padx=2)
-        ttk.Button(barra, text="🌳 Árbol", command=self._abrir_arbol).pack(side="left", padx=2)
-        ttk.Button(barra, text="➕ Bloque propio", command=self._abrir_bloque).pack(side="left", padx=2)
-        ttk.Button(barra, text="📋 Plan/Equiv", command=self._abrir_plan).pack(side="left", padx=2)
-        ttk.Button(barra, text="✅ Check", command=self._abrir_check).pack(side="left", padx=2)
-        ttk.Button(barra, text="🎓 Cursadas", command=self._abrir_cursadas).pack(side="left", padx=2)
-        ttk.Button(barra, text="◀", width=2, command=self._rand_prev).pack(side="left", padx=(6, 0))
-        ttk.Button(barra, text="🎲 Random", command=self._aleatorio).pack(side="left")
-        ttk.Button(barra, text="▶", width=2, command=self._rand_next).pack(side="left", padx=(0, 2))
-        ttk.Button(barra, text="📤 Exportar", command=self._abrir_exportar).pack(side="left", padx=2)
 
-        ttk.Label(barra, text="  Créditos máx:").pack(side="left")
+        mb = ttk.Menubutton(barra, text=" Cargar datos")
+        try:
+            self._iconos["mb"] = crear_imagen_icono(FA.FOLDER_OPEN, color="#212121")
+            mb.config(image=self._iconos["mb"], compound="left")
+        except Exception:
+            pass
+        menu = tk.Menu(mb, tearoff=False)
+        menu.add_command(label="Desde el SAES (en línea)", command=self._abrir_saes)
+        menu.add_command(label="Desde un TXT (escuelas sin SAES)",
+                         command=self._cargar_txt)
+        if len(self.config_datos.origenes) > 0:
+            menu.add_separator()
+            for o in self.config_datos.origenes:
+                menu.add_command(label=f"Nube: {o.nombre}",
+                                 command=lambda n=o.nombre: self._sync_escuela(n))
+        mb["menu"] = menu
+        mb.pack(side="left", padx=2)
+        self._botones.append((mb, " Cargar datos"))
+
+        self._btn(barra, FA.SEARCH, "Filtrar", self._abrir_filtro)
+        self._btn(barra, FA.SEEDLING, "Bifurcar", self._bifurcar)
+        self._btn(barra, FA.TREE, "Árbol", self._abrir_arbol)
+        self._btn(barra, FA.PLUS, "Bloque propio", self._abrir_bloque)
+        self._btn(barra, FA.CLIPBOARD, "Plan/Equiv", self._abrir_plan)
+        self._btn(barra, FA.CHECK, "Check", self._abrir_check)
+        self._btn(barra, FA.CHECK, "Cursadas", self._abrir_cursadas)
+        ttk.Button(barra, text="◀", width=2, command=self._rand_prev).pack(side="left", padx=(6, 0))
+        ttk.Button(barra, text="🎲", width=3, command=self._aleatorio).pack(side="left")
+        ttk.Button(barra, text="▶", width=2, command=self._rand_next).pack(side="left", padx=(0, 2))
+        self._btn(barra, FA.UPLOAD, "Exportar", self._abrir_exportar)
+        self.btn_lista = self._btn(barra, FA.EYE_SLASH, "Ocultar lista", self._toggle_lista)
+        self._btn(barra, FA.TRASH, "Limpiar", self._limpiar_todo)
+
+        # barra de estado (ancho completo, siempre visible)
+        estado_bar = ttk.Frame(self, padding=(10, 2))
+        estado_bar.pack(fill="x")
+        ttk.Label(estado_bar, text="Créditos máx:").pack(side="left")
         self.var_max = tk.StringVar()
-        ent_max = ttk.Entry(barra, textvariable=self.var_max, width=7)
-        ent_max.pack(side="left")
+        ent_max = ttk.Entry(estado_bar, textvariable=self.var_max, width=7)
+        ent_max.pack(side="left", padx=(2, 14))
         ent_max.bind("<Return>", self._aplicar_max)
         ent_max.bind("<FocusOut>", self._aplicar_max)
-
-        self.lbl_contadores = ttk.Label(barra, font=("Segoe UI", 10, "bold"))
-        self.lbl_contadores.pack(side="right", padx=8)
-        self.lbl_check = ttk.Label(barra, font=("Segoe UI", 10, "bold"))
+        self.lbl_contadores = ttk.Label(estado_bar, font=("Segoe UI", 10, "bold"))
+        self.lbl_contadores.pack(side="left")
+        self.lbl_check = ttk.Label(estado_bar, font=("Segoe UI", 10, "bold"))
         self.lbl_check.pack(side="right")
+
+        self._ajuste_pendiente = None
+        self.bind("<Configure>", self._al_redimensionar)
 
     def _construir_cuerpo(self) -> None:
         cuerpo = ttk.Frame(self)
         cuerpo.pack(fill="both", expand=True)
 
         # panel lateral: canvas dibujado (mucho más rápido que cientos de widgets)
+        self.cuerpo = cuerpo
         lateral = ttk.Frame(cuerpo, width=330)
+        self.lista_frame = lateral
         lateral.pack(side="left", fill="y")
         lateral.pack_propagate(False)
         self.canvas_lista = tk.Canvas(lateral, highlightthickness=0, bg="#FAFAFA",
@@ -106,6 +156,8 @@ class App(tk.Tk):
         self.canvas_insc.pack(side="left", fill="both", expand=True)
         barra_insc.pack(side="right", fill="y")
         self.bind_all("<MouseWheel>", self._rueda_global)
+        self.bind("<Enter>", lambda e: self.bind_all("<MouseWheel>",
+                                                     self._rueda_global))
         for btn, delta in (("<Button-4>", 120), ("<Button-5>", -120)):  # rueda en Linux
             self.bind_all(btn, lambda e, d=delta: (setattr(e, "delta", d),
                                                    self._rueda_global(e)))
@@ -115,6 +167,7 @@ class App(tk.Tk):
         self.canvas_horario.pack(side="left", fill="both", expand=True)
         self._redibujo_pendiente: str | None = None
         self._bloques_horario: dict[str, str] = {}
+        self._bloques_prof: dict[str, str] = {}
         self.canvas_horario.bind("<Configure>", lambda e: self._redibujar_pronto())
         self.canvas_horario.bind("<Button-1>", self._click_horario)
 
@@ -126,12 +179,6 @@ class App(tk.Tk):
         self.marco_ramas = ttk.Frame(pie)
         self.marco_ramas.pack(side="left", fill="x")
 
-    def _activar_rueda(self, activo: bool) -> None:
-        if activo:
-            self.canvas_lista.bind_all("<MouseWheel>", self._rueda_lista)
-        else:
-            self.canvas_lista.unbind_all("<MouseWheel>")
-
     def _rueda_global(self, ev) -> None:
         w = self.winfo_containing(ev.x_root, ev.y_root)
         while w is not None:
@@ -142,6 +189,27 @@ class App(tk.Tk):
                 self.canvas_insc.yview_scroll(-2 if ev.delta > 0 else 2, "units")
                 return
             w = getattr(w, "master", None)
+
+    def _al_redimensionar(self, ev) -> None:
+        if ev.widget is not self:
+            return
+        if self._ajuste_pendiente:
+            self.after_cancel(self._ajuste_pendiente)
+        self._ajuste_pendiente = self.after(60, self._ajustar_toolbar)
+
+    def _ajustar_toolbar(self) -> None:
+        self._ajuste_pendiente = None
+        ancho = self.winfo_width()
+        # con muchos botones el texto no cabe; abajo de cierto ancho, solo iconos
+        solo_icono = ancho < 1200
+        for b, texto in self._botones:
+            try:
+                if solo_icono and b.cget("image"):
+                    b.config(text="", compound="image")
+                else:
+                    b.config(text=texto, compound="left")
+            except tk.TclError:
+                pass
 
     def _redibujar_pronto(self) -> None:
         if self._redibujo_pendiente:
@@ -172,6 +240,59 @@ class App(tk.Tk):
                 "del SAES con tabuladores?")
         self.refresh()
 
+    def _sync_escuela(self, nombre: str) -> None:
+        """Descarga el datafile de una escuela desde el repo de datos (nube),
+        con fallback a la copia local si no hay internet."""
+        for i, o in enumerate(self.config_datos.origenes):
+            if o.nombre == nombre:
+                self.config_datos.active_index = i
+                break
+        try:
+            ruta = self.loader.cargar_escuela_activa(force=True)
+        except LoadError as e:
+            if self.loader.existe_archivo_local(nombre):
+                ruta = self.loader.existe_archivo_local(nombre)
+            else:
+                messagebox.showerror("Sin datos", f"No pude bajar {nombre}:\n{e}")
+                return
+        if not ruta:
+            messagebox.showwarning("Sin datos", f"No hay datos para {nombre}.")
+            return
+        try:
+            n = self.estado.cargar_txt(str(ruta))
+        except OSError as e:
+            messagebox.showerror("Error al leer", str(e))
+            return
+        messagebox.showinfo("Nube", f"{nombre}: {n} grupos cargados.")
+        self.refresh()
+
+    def _toggle_lista(self) -> None:
+        if self._lista_visible:
+            self.lista_frame.pack_forget()
+            self.btn_lista.config(text="Mostrar lista")
+        else:
+            self.lista_frame.pack(side="left", fill="y", before=self.canvas_horario)
+            self.btn_lista.config(text="Ocultar lista")
+        self._lista_visible = not self._lista_visible
+
+    def _limpiar_todo(self) -> None:
+        if not messagebox.askyesno(
+                "Limpiar todo",
+                "Se borrarán todas las selecciones, ramas, favoritos y el check.\n"
+                "¿Continuar?"):
+            return
+        e = self.estado
+        e.ramas = {1: Rama(1, "Principal")}
+        e.rama_actual = 1
+        e._next_rama = 2
+        e.favoritos.clear()
+        e.necesarias.clear()
+        e.colapsadas.clear()
+        self._hist.clear()
+        self._hist_i = -1
+        self._combos_vistos.clear()
+        self.refresh()
+
     def _unica(self, clave: str, fabrica) -> None:
         v = self._ventanas.get(clave)
         if v is not None and v.winfo_exists():
@@ -182,6 +303,13 @@ class App(tk.Tk):
         v = fabrica()
         v.transient(self)
         self._ventanas[clave] = v
+
+    def _abrir_saes(self) -> None:
+        self._unica("saes", self._crear_dialogo_saes)
+
+    def _crear_dialogo_saes(self) -> tk.Toplevel:
+        from horario_saes.modulos.dialogos import DialogoSaes
+        return DialogoSaes(self, self.estado, self.refresh)
 
     def _abrir_filtro(self) -> None:
         self._unica("filtro", lambda: DialogoFiltro(self, self.filtros, self.refresh))
@@ -239,6 +367,10 @@ class App(tk.Tk):
     def _click_horario(self, evento) -> None:
         for item in self.canvas_horario.find_withtag("current"):
             for tag in self.canvas_horario.gettags(item):
+                profe = self._bloques_prof.get(tag)
+                if profe:
+                    self._abrir_foros_profesor(profe)
+                    return
                 op_id = self._bloques_horario.get(tag)
                 if op_id:
                     candados = self.estado.rama().candados
@@ -248,6 +380,12 @@ class App(tk.Tk):
                         candados.append(op_id)
                     self.refresh()
                     return
+
+    def _abrir_foros_profesor(self, profesor: str) -> None:
+        import webbrowser
+        from urllib.parse import quote_plus
+        for plantilla in self.estado.foros:
+            webbrowser.open(plantilla.replace("{profesor}", quote_plus(profesor.strip())))
 
     def _aleatorio(self) -> None:
         import random as _rnd
@@ -262,29 +400,34 @@ class App(tk.Tk):
             cubiertas.add(normalizar(op.materia))
             cubiertas |= e.equivalentes(op.materia)
 
-        # materias objetivo: las del check si hay, si no las inscritas ahorita
+        # slots objetivo: cada necesaria del check junta sus materias
+        # equivalentes en UN solo slot; sin check, las inscritas ahorita
+        slots: dict[str, list[str]] = {}
         if e.necesarias:
-            objetivo_n = {normalizar(n) for n in e.necesarias}
-            materias = [m for m in e.orden_materias
-                        if normalizar(m) in objetivo_n
-                        or (e.equivalentes(m) & objetivo_n)]
+            for nec in sorted(e.necesarias):
+                nn = normalizar(nec)
+                if nn in cubiertas:
+                    continue
+                slots[nec] = [m for m in e.orden_materias
+                              if normalizar(m) == nn or nn in e.equivalentes(m)]
         else:
-            materias = [op.materia for op in sel if not op.propia]
-        materias = [m for m in dict.fromkeys(materias)
-                    if normalizar(m) not in cubiertas]
-        if not materias:
+            for op in sel:
+                if not op.propia and normalizar(op.materia) not in cubiertas:
+                    slots.setdefault(op.materia, [op.materia])
+        if not slots:
             messagebox.showinfo("Random", "No hay materias que sortear: todo "
                                 "está con candado o no hay check/selección.")
             return
 
         pools: dict[str, list] = {}
         sin_opciones = []
-        for m in materias:
-            pool = [op for op in e.opciones_de(m) if self._pasa_filtro(op)]
+        for slot, mats in slots.items():
+            pool = [op for m in mats for op in e.opciones_de(m)
+                    if self._pasa_filtro(op)]
             if pool:
-                pools[m] = pool
+                pools[slot] = pool
             else:
-                sin_opciones.append(m)
+                sin_opciones.append(slot)
         if not pools:
             messagebox.showinfo("Random", "Con estos filtros ninguna materia "
                                 "objetivo tiene opciones.")
@@ -435,6 +578,10 @@ class App(tk.Tk):
     # ------------------------------------------------------------ refresh
     def refresh(self) -> None:
         self.bind_all("<MouseWheel>", self._rueda_global)
+        if self.estado.rama_actual != self._ultima_rama:
+            self._ultima_rama = self.estado.rama_actual
+            self._hist.clear()
+            self._hist_i = -1
         self.estado.guardar()
         self._refrescar_contadores()
         self._refrescar_lista()
@@ -511,7 +658,11 @@ class App(tk.Tk):
                                       foreground="#C62828")
             else:
                 self.lbl_check.config(text="Check ✔   |", foreground="#2E7D32")
-        if self.focus_get() is None or self.focus_get().winfo_class() != "TEntry":
+        try:
+            foco = self.focus_get()
+        except KeyError:
+            foco = None
+        if foco is None or foco.winfo_class() != "TEntry":
             self.var_max.set("" if e.max_creditos is None else f"{e.max_creditos:g}")
 
     # ------------------------------------------------------- lista lateral
@@ -708,6 +859,7 @@ class App(tk.Tk):
         # bloques
         if not mini:
             self._bloques_horario.clear()
+            self._bloques_prof.clear()
         candados = set(rama.candados)
         nb = 0
         for op in self.estado.seleccionadas(rama):
@@ -719,9 +871,10 @@ class App(tk.Tk):
                 extra = {"dash": (4, 2)} if op.propia else {}
                 con_candado = op.id in candados
                 etiquetas = ()
+                idx = nb
                 if not mini:
-                    tag_b = f"blk{nb}"
                     nb += 1
+                    tag_b = f"blk{idx}"
                     self._bloques_horario[tag_b] = op.id
                     etiquetas = (tag_b,)
                 cv.create_rectangle(x1, y1, x2, y2, fill=color,
@@ -733,12 +886,21 @@ class App(tk.Tk):
                                    font=("Segoe UI", 10), tags=etiquetas)
                 if not mini:
                     lugar = f" · {op.salon}" if op.salon and op.salon != "000" else ""
-                    texto = f"{op.grupo}-{op.materia}\n{op.profesor}{lugar}"
+                    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
                     if op.propia:
-                        texto = f"{op.materia}\n{op.nota or ''}{lugar}"
-                    cv.create_text((x1 + x2) / 2, (y1 + y2) / 2, text=texto,
-                                   font=("Segoe UI", 8), justify="center",
-                                   width=x2 - x1 - 6, tags=etiquetas)
+                        cv.create_text(cx, cy, text=f"{op.materia}\n{op.nota or ''}{lugar}",
+                                       font=("Segoe UI", 8), justify="center",
+                                       width=x2 - x1 - 6, tags=etiquetas)
+                    else:
+                        cv.create_text(cx, cy - 10, text=f"{op.grupo}-{op.materia}",
+                                       font=("Segoe UI", 8), justify="center",
+                                       width=x2 - x1 - 6, tags=etiquetas)
+                        tag_pf = f"pf{idx}"
+                        self._bloques_prof[tag_pf] = op.profesor
+                        cv.create_text(cx, cy + 12, text=f"{op.profesor}{lugar}",
+                                       font=("Segoe UI", 8, "underline"),
+                                       fill="#0D47A1", justify="center",
+                                       width=x2 - x1 - 6, tags=(tag_pf,), activefill="#1976D2")
 
     # ------------------------------------------------------------- ramas
     def _refrescar_ramas(self) -> None:

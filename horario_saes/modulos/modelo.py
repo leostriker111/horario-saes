@@ -38,6 +38,9 @@ class Estado:
         self.equivalencias: list[Equivalencia] = []
         self.necesarias: set[str] = set()             # checklist de materias por inscribir
         self.cursadas: set[str] = set()               # materias ya aprobadas
+        self.foros: list[str] = [
+            "https://foroupiicsa.net/diccionario/buscar/{profesor}",
+            "https://www.misprofesores.com/Buscar?buscar=Profesores&q={profesor}"]
         self.ramas: dict[int, Rama] = {1: Rama(1, "Principal")}
         self.rama_actual = 1
         self._next_rama = 2
@@ -289,6 +292,7 @@ class Estado:
             "colapsadas": sorted(self.colapsadas),
             "necesarias": sorted(self.necesarias),
             "cursadas": sorted(self.cursadas),
+            "foros": self.foros,
             "colores": self.colores,
             "propias": propias,
             "rama_actual": self.rama_actual,
@@ -315,6 +319,7 @@ class Estado:
         self.colapsadas = set(datos.get("colapsadas", []))
         self.necesarias = set(datos.get("necesarias", []))
         self.cursadas = set(datos.get("cursadas", []))
+        self.foros = datos.get("foros") or self.foros
         self.colores = datos.get("colores", {})
         self._next_rama = datos.get("next_rama", 2)
         self._next_propia = datos.get("next_propia", 1)
