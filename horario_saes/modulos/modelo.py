@@ -28,7 +28,10 @@ class Estado:
         self.opciones: dict[str, Opcion] = {}
         self.orden_materias: list[str] = []
         self.colores: dict[str, str] = {}
-        self.favoritos: set[str] = set()
+        self.favoritos: set[str] = set()            # profesores favoritos
+        self.favoritos_grupo: set[str] = set()      # grupos (op.id) favoritos
+        self.baneados: set[str] = set()             # grupos (op.id) baneados
+        self.baneados_profe: set[str] = set()       # profesores baneados
         self.creditos: dict[str, float | None] = {}   # None = SN (sin créditos)
         self.creditos_manuales: set[str] = set()
         self.creditos_txt: dict[str, float] = {}      # normalizado -> créditos
@@ -183,12 +186,16 @@ class Estado:
                 return False
         return True
 
+    def esta_baneada(self, op: Opcion) -> bool:
+        return op.id in self.baneados or op.profesor in self.baneados_profe
+
     def disponibles(self, rama: Rama | None = None) -> list[Opcion]:
         rama = rama or self.rama()
         tomadas = {op.materia for op in self.seleccionadas(rama)}
         return [
             op for op in self.opciones.values()
-            if op.materia not in tomadas and self.es_compatible(op, rama)
+            if op.materia not in tomadas and not self.esta_baneada(op)
+            and self.es_compatible(op, rama)
         ]
 
     def agregar(self, op_id: str) -> bool:
@@ -286,6 +293,9 @@ class Estado:
         datos = {
             "ruta_txt": self.ruta_txt,
             "favoritos": sorted(self.favoritos),
+            "favoritos_grupo": sorted(self.favoritos_grupo),
+            "baneados": sorted(self.baneados),
+            "baneados_profe": sorted(self.baneados_profe),
             "creditos": self.creditos,
             "creditos_manuales": sorted(self.creditos_manuales),
             "max_creditos": self.max_creditos,
@@ -313,6 +323,9 @@ class Estado:
             return False
         datos = json.loads(self.ruta_sesion.read_text(encoding="utf-8"))
         self.favoritos = set(datos.get("favoritos", []))
+        self.favoritos_grupo = set(datos.get("favoritos_grupo", []))
+        self.baneados = set(datos.get("baneados", []))
+        self.baneados_profe = set(datos.get("baneados_profe", []))
         self.creditos = datos.get("creditos", {})
         self.creditos_manuales = set(datos.get("creditos_manuales", []))
         self.max_creditos = datos.get("max_creditos")

@@ -36,6 +36,7 @@ class App(tk.Tk):
         self.filtros = {"texto": "", "solo_favoritos": False,
                         "ocultar_incompatibles": False, "turno": "todos",
                         "solo_check": False, "ocultar_cursadas": False,
+                        "mostrar_baneados": False,
                         "dias": [True] * 5, "hora_ini": 7, "hora_fin": 22}
         self._combos_vistos: set[frozenset] = set()   # volátil: randoms ya dados
         self._hist: list[frozenset] = []              # historial ◀ ▶ del random
@@ -562,6 +563,26 @@ class App(tk.Tk):
             self.estado.favoritos.add(profesor)
         self.refresh()
 
+    def _toggle_fav_grupo(self, op_id: str) -> None:
+        if op_id in self.estado.favoritos_grupo:
+            self.estado.favoritos_grupo.discard(op_id)
+        else:
+            self.estado.favoritos_grupo.add(op_id)
+        self.refresh()
+
+    def _toggle_ban(self, op_id: str) -> None:
+        e = self.estado
+        if op_id in e.baneados:
+            e.baneados.discard(op_id)
+        else:
+            e.baneados.add(op_id)
+            for rama in e.ramas.values():   # si estaba puesta, la saco
+                if op_id in rama.seleccion:
+                    rama.seleccion.remove(op_id)
+                if op_id in rama.candados:
+                    rama.candados.remove(op_id)
+        self.refresh()
+
     def _quitar_propia(self, op_id: str) -> None:
         if messagebox.askyesno("Eliminar bloque", "¿Eliminar este bloque propio?"):
             self.estado.quitar_propia(op_id)
@@ -671,7 +692,11 @@ class App(tk.Tk):
         texto = f["texto"].lower().strip()
         if texto and texto not in f"{op.materia} {op.profesor} {op.grupo}".lower():
             return False
-        if f["solo_favoritos"] and not op.propia and op.profesor not in self.estado.favoritos:
+        if not f.get("mostrar_baneados") and self.estado.esta_baneada(op):
+            return False
+        if f["solo_favoritos"] and not op.propia \
+                and op.profesor not in self.estado.favoritos \
+                and op.id not in self.estado.favoritos_grupo:
             return False
         if f["turno"] != "todos" and op.sesiones:
             inicio_min = min(s.inicio for s in op.sesiones)
@@ -704,6 +729,10 @@ class App(tk.Tk):
             self._toggle_opcion(dato)
         elif tipo == "fav":
             self._toggle_favorito(dato)
+        elif tipo == "favg":
+            self._toggle_fav_grupo(dato)
+        elif tipo == "ban":
+            self._toggle_ban(dato)
         elif tipo == "del":
             self._quitar_propia(dato)
         elif tipo == "prof":
@@ -801,14 +830,24 @@ class App(tk.Tk):
                 cv.create_text(16, y + 36, text=op.resumen_horario()[:48], anchor="w",
                                fill=fg, font=("Segoe UI", 8), tags=(tag_op,))
 
-                tag_ex = f"x{n}"
+                tag_ban, tag_fg, tag_ex = f"b{n}", f"g{n}", f"x{n}"
                 n += 1
                 if op.propia:
                     self._acciones_lista[tag_ex] = ("del", op.id)
                     cv.create_text(ancho - 22, y + 10, text="🗑",
                                    font=("Segoe UI", 9), tags=(tag_ex,))
                 else:
-                    fav = op.profesor in self.estado.favoritos
+                    fav = op.profesor in e.favoritos
+                    favg = op.id in e.favoritos_grupo
+                    baneada = e.esta_baneada(op)
+                    self._acciones_lista[tag_ban] = ("ban", op.id)
+                    cv.create_text(ancho - 58, y + 10, text="⊘",
+                                   fill="#C62828" if baneada else "#CFD8DC",
+                                   font=("Segoe UI", 11, "bold"), tags=(tag_ban,))
+                    self._acciones_lista[tag_fg] = ("favg", op.id)
+                    cv.create_text(ancho - 40, y + 10, text="⚑",
+                                   fill="#6A1B9A" if favg else "#CFD8DC",
+                                   font=("Segoe UI", 11), tags=(tag_fg,))
                     self._acciones_lista[tag_ex] = ("fav", op.profesor)
                     cv.create_text(ancho - 22, y + 10, text="★" if fav else "☆",
                                    fill="#F9A825" if fav else "#90A4AE",
@@ -887,18 +926,22 @@ class App(tk.Tk):
                 if not mini:
                     lugar = f" · {op.salon}" if op.salon and op.salon != "000" else ""
                     cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+                    alto_b = y2 - y1
+                    # texto adaptable: se encoge en bloques pequeños
+                    fsize = 8 if alto_b >= 54 else (7 if alto_b >= 40 else 6)
+                    off = fsize + 3
                     if op.propia:
                         cv.create_text(cx, cy, text=f"{op.materia}\n{op.nota or ''}{lugar}",
-                                       font=("Segoe UI", 8), justify="center",
+                                       font=("Segoe UI", fsize), justify="center",
                                        width=x2 - x1 - 6, tags=etiquetas)
                     else:
-                        cv.create_text(cx, cy - 10, text=f"{op.grupo}-{op.materia}",
-                                       font=("Segoe UI", 8), justify="center",
+                        cv.create_text(cx, cy - off, text=f"{op.grupo}-{op.materia}",
+                                       font=("Segoe UI", fsize), justify="center",
                                        width=x2 - x1 - 6, tags=etiquetas)
                         tag_pf = f"pf{idx}"
                         self._bloques_prof[tag_pf] = op.profesor
-                        cv.create_text(cx, cy + 12, text=f"{op.profesor}{lugar}",
-                                       font=("Segoe UI", 8, "underline"),
+                        cv.create_text(cx, cy + off, text=f"{op.profesor}{lugar}",
+                                       font=("Segoe UI", fsize, "underline"),
                                        fill="#0D47A1", justify="center",
                                        width=x2 - x1 - 6, tags=(tag_pf,), activefill="#1976D2")
 
