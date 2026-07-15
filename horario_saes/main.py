@@ -61,9 +61,11 @@ class App(tk.Tk):
         except Exception:
             b = ttk.Button(parent, text=texto, command=command)
         b.pack(side="left", padx=2)
+        self._botones.append((b, texto))
         return b
 
     def _construir_toolbar(self) -> None:
+        self._botones: list = []
         barra = ttk.Frame(self, padding=(8, 6))
         barra.pack(fill="x")
 
@@ -84,6 +86,7 @@ class App(tk.Tk):
                                  command=lambda n=o.nombre: self._sync_escuela(n))
         mb["menu"] = menu
         mb.pack(side="left", padx=2)
+        self._botones.append((mb, " Cargar datos"))
 
         self._btn(barra, FA.SEARCH, "Filtrar", self._abrir_filtro)
         self._btn(barra, FA.SEEDLING, "Bifurcar", self._bifurcar)
@@ -99,17 +102,22 @@ class App(tk.Tk):
         self.btn_lista = self._btn(barra, FA.EYE_SLASH, "Ocultar lista", self._toggle_lista)
         self._btn(barra, FA.TRASH, "Limpiar", self._limpiar_todo)
 
-        ttk.Label(barra, text="  Créditos máx:").pack(side="left")
+        # barra de estado (ancho completo, siempre visible)
+        estado_bar = ttk.Frame(self, padding=(10, 2))
+        estado_bar.pack(fill="x")
+        ttk.Label(estado_bar, text="Créditos máx:").pack(side="left")
         self.var_max = tk.StringVar()
-        ent_max = ttk.Entry(barra, textvariable=self.var_max, width=7)
-        ent_max.pack(side="left")
+        ent_max = ttk.Entry(estado_bar, textvariable=self.var_max, width=7)
+        ent_max.pack(side="left", padx=(2, 14))
         ent_max.bind("<Return>", self._aplicar_max)
         ent_max.bind("<FocusOut>", self._aplicar_max)
-
-        self.lbl_contadores = ttk.Label(barra, font=("Segoe UI", 10, "bold"))
-        self.lbl_contadores.pack(side="right", padx=8)
-        self.lbl_check = ttk.Label(barra, font=("Segoe UI", 10, "bold"))
+        self.lbl_contadores = ttk.Label(estado_bar, font=("Segoe UI", 10, "bold"))
+        self.lbl_contadores.pack(side="left")
+        self.lbl_check = ttk.Label(estado_bar, font=("Segoe UI", 10, "bold"))
         self.lbl_check.pack(side="right")
+
+        self._ajuste_pendiente = None
+        self.bind("<Configure>", self._al_redimensionar)
 
     def _construir_cuerpo(self) -> None:
         cuerpo = ttk.Frame(self)
@@ -181,6 +189,27 @@ class App(tk.Tk):
                 self.canvas_insc.yview_scroll(-2 if ev.delta > 0 else 2, "units")
                 return
             w = getattr(w, "master", None)
+
+    def _al_redimensionar(self, ev) -> None:
+        if ev.widget is not self:
+            return
+        if self._ajuste_pendiente:
+            self.after_cancel(self._ajuste_pendiente)
+        self._ajuste_pendiente = self.after(60, self._ajustar_toolbar)
+
+    def _ajustar_toolbar(self) -> None:
+        self._ajuste_pendiente = None
+        ancho = self.winfo_width()
+        # con muchos botones el texto no cabe; abajo de cierto ancho, solo iconos
+        solo_icono = ancho < 1200
+        for b, texto in self._botones:
+            try:
+                if solo_icono and b.cget("image"):
+                    b.config(text="", compound="image")
+                else:
+                    b.config(text=texto, compound="left")
+            except tk.TclError:
+                pass
 
     def _redibujar_pronto(self) -> None:
         if self._redibujo_pendiente:

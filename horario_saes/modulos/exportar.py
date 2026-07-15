@@ -186,7 +186,7 @@ def render_pdf(estado: Estado, ramas: list[Rama], ruta: Path) -> None:
 
     W, H = landscape(A4)
     c = rlcanvas.Canvas(str(ruta), pagesize=(W, H))
-    m_izq, m_der, m_sup, m_inf = 55, 22, 60, 26
+    m_izq, m_der, m_sup, m_inf = 55, 22, 78, 26
     col = (W - m_izq - m_der) / 5
     area_alto = (H - m_sup) - m_inf
     total_min = (HORA_FIN - HORA_INI) * 60
@@ -202,10 +202,10 @@ def render_pdf(estado: Estado, ramas: list[Rama], ruta: Path) -> None:
     for rama in ramas:
         c.setTitle(f"Horario - {rama.nombre}")
         c.setFont("Helvetica-Bold", 16)
-        c.drawString(m_izq, H - 34, texto_seguro(f"Horario — {rama.nombre}"))
+        c.drawString(m_izq, H - 28, texto_seguro(f"Horario — {rama.nombre}"))
         c.setFont("Helvetica", 10)
         c.setFillColor(HexColor("#546E7A"))
-        c.drawString(m_izq, H - 50, texto_seguro(_subtitulo(estado, rama)))
+        c.drawString(m_izq, H - 46, texto_seguro(_subtitulo(estado, rama)))
         c.setFillColor(HexColor("#000000"))
 
         # rejilla
@@ -224,7 +224,7 @@ def render_pdf(estado: Estado, ramas: list[Rama], ruta: Path) -> None:
         c.setFont("Helvetica-Bold", 10)
         c.setFillColor(HexColor("#37474F"))
         for d, nombre in enumerate(DIAS_LARGO):
-            c.drawCentredString(m_izq + d * col + col / 2, H - m_sup + 8, nombre)
+            c.drawCentredString(m_izq + d * col + col / 2, H - m_sup + 7, nombre)
         c.setFillColor(HexColor("#000000"))
 
         # bloques
