@@ -478,7 +478,8 @@ class DialogoFiltro(tk.Toplevel):
         self.var_incomp = tk.BooleanVar(value=filtros["ocultar_incompatibles"])
         self.var_check = tk.BooleanVar(value=filtros["solo_check"])
         self.var_cursadas = tk.BooleanVar(value=filtros["ocultar_cursadas"])
-        ttk.Checkbutton(cuerpo, text="Solo profesores favoritos ★",
+        self.var_baneados = tk.BooleanVar(value=filtros.get("mostrar_baneados", False))
+        ttk.Checkbutton(cuerpo, text="Solo favoritos (★ profe o ⚑ grupo)",
                         variable=self.var_fav).pack(anchor="w")
         ttk.Checkbutton(cuerpo, text="Ocultar opciones incompatibles",
                         variable=self.var_incomp).pack(anchor="w")
@@ -486,6 +487,8 @@ class DialogoFiltro(tk.Toplevel):
                         variable=self.var_check).pack(anchor="w")
         ttk.Checkbutton(cuerpo, text="Ocultar ya cursadas 🎓",
                         variable=self.var_cursadas).pack(anchor="w")
+        ttk.Checkbutton(cuerpo, text="Mostrar baneados ⊘ (para des-banear)",
+                        variable=self.var_baneados).pack(anchor="w")
 
         ttk.Label(cuerpo, text="Días:").pack(anchor="w", pady=(8, 0))
         marco_dias = ttk.Frame(cuerpo)
@@ -524,6 +527,7 @@ class DialogoFiltro(tk.Toplevel):
             filtros["turno"] = self.var_turno.get()
             filtros["solo_check"] = self.var_check.get()
             filtros["ocultar_cursadas"] = self.var_cursadas.get()
+            filtros["mostrar_baneados"] = self.var_baneados.get()
             filtros["dias"] = [v.get() for v in self.vars_dias]
             if self.var_hfin.get() < self.var_hini.get():
                 self.var_hfin.set(self.var_hini.get())
@@ -532,8 +536,8 @@ class DialogoFiltro(tk.Toplevel):
             al_cambiar()
 
         for var in (self.var_texto, self.var_fav, self.var_incomp, self.var_turno,
-                    self.var_check, self.var_cursadas, self.var_hini, self.var_hfin,
-                    *self.vars_dias):
+                    self.var_check, self.var_cursadas, self.var_baneados,
+                    self.var_hini, self.var_hfin, *self.vars_dias):
             var.trace_add("write", aplicar)
 
         def limpiar():
@@ -543,6 +547,7 @@ class DialogoFiltro(tk.Toplevel):
             self.var_turno.set("todos")
             self.var_check.set(False)
             self.var_cursadas.set(False)
+            self.var_baneados.set(False)
             for v in self.vars_dias:
                 v.set(True)
             self.var_hini.set(7)
@@ -610,6 +615,11 @@ class VistaProfesores(tk.Toplevel):
                                 fg="#F9A825" if fav else "#B0BEC5")
             estrella.pack(side="left")
             estrella.bind("<Button-1>", lambda e, p=profesor: self._toggle(p))
+            baneado = profesor in self.estado.baneados_profe
+            ban = tk.Label(fila, text="⊘", cursor="hand2", font=("Segoe UI", 12, "bold"),
+                           fg="#C62828" if baneado else "#B0BEC5")
+            ban.pack(side="left", padx=(4, 0))
+            ban.bind("<Button-1>", lambda e, p=profesor: self._toggle_ban_profe(p))
             lupa = tk.Label(fila, text="🔎", cursor="hand2", font=("Segoe UI", 11))
             lupa.pack(side="left", padx=(4, 0))
             lupa.bind("<Button-1>", lambda e, p=profesor: self._buscar_foros(p))
@@ -622,6 +632,19 @@ class VistaProfesores(tk.Toplevel):
         total = len(profes)
         ttk.Label(self.interior, text=f"{total} profesor(es)",
                   font=("Segoe UI", 9, "italic")).pack(anchor="w", padx=8, pady=6)
+
+    def _toggle_ban_profe(self, profesor: str) -> None:
+        b = self.estado.baneados_profe
+        if profesor in b:
+            b.discard(profesor)
+        else:
+            b.add(profesor)
+            for rama in self.estado.ramas.values():
+                for op in list(self.estado.seleccionadas(rama)):
+                    if op.profesor == profesor and op.id in rama.seleccion:
+                        rama.seleccion.remove(op.id)
+        self._llenar()
+        self.al_cambiar()
 
     def _buscar_foros(self, profesor: str) -> None:
         for plantilla in self.estado.foros:
