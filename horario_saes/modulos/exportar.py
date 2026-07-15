@@ -160,6 +160,121 @@ def render_svg(estado: Estado, rama: Rama, ancho: int = 1170, alto: int = 827) -
     return "\n".join(p)
 
 
+def _pdf_wrap(c, texto, font, size, maxw):
+    lineas, cur = [], ""
+    for w in texto.split():
+        prueba = (cur + " " + w).strip()
+        if c.stringWidth(prueba, font, size) <= maxw or not cur:
+            cur = prueba
+        else:
+            lineas.append(cur)
+            cur = w
+    if cur:
+        lineas.append(cur)
+    return lineas
+
+
+def render_pdf(estado: Estado, ramas: list[Rama], ruta: Path) -> None:
+    """PDF vectorial: texto real (seleccionable/buscable), hipervínculos en el
+    nombre del profe (a tus foros) y adaptable a cualquier visor. Una página
+    por rama. Usa fuentes estándar (Helvetica) → corre igual en Win/Mac/Linux."""
+    from urllib.parse import quote_plus
+
+    from reportlab.lib.colors import HexColor
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.pdfgen import canvas as rlcanvas
+
+    W, H = landscape(A4)
+    c = rlcanvas.Canvas(str(ruta), pagesize=(W, H))
+    m_izq, m_der, m_sup, m_inf = 55, 22, 60, 26
+    col = (W - m_izq - m_der) / 5
+    area_alto = (H - m_sup) - m_inf
+    total_min = (HORA_FIN - HORA_INI) * 60
+    foro = estado.foros[0] if estado.foros else ""
+
+    def y_de(minutos: int) -> float:  # reportlab: origen abajo-izquierda
+        frac = (minutos - HORA_INI * 60) / total_min
+        return (H - m_sup) - frac * area_alto
+
+    def texto_seguro(s: str) -> str:
+        return s.replace("—", "-").replace("–", "-")
+
+    for rama in ramas:
+        c.setTitle(f"Horario - {rama.nombre}")
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(m_izq, H - 34, texto_seguro(f"Horario — {rama.nombre}"))
+        c.setFont("Helvetica", 10)
+        c.setFillColor(HexColor("#546E7A"))
+        c.drawString(m_izq, H - 50, texto_seguro(_subtitulo(estado, rama)))
+        c.setFillColor(HexColor("#000000"))
+
+        # rejilla
+        c.setFont("Helvetica", 8)
+        for h in range(HORA_INI, HORA_FIN + 1):
+            y = y_de(h * 60)
+            c.setStrokeColor(HexColor("#E0E0E0"))
+            c.line(m_izq, y, W - m_der, y)
+            c.setFillColor(HexColor("#78909C"))
+            c.drawRightString(m_izq - 6, y - 3, f"{h}:00")
+        c.setFillColor(HexColor("#000000"))
+        for d in range(6):
+            x = m_izq + d * col
+            c.setStrokeColor(HexColor("#B0BEC5"))
+            c.line(x, H - m_sup, x, m_inf)
+        c.setFont("Helvetica-Bold", 10)
+        c.setFillColor(HexColor("#37474F"))
+        for d, nombre in enumerate(DIAS_LARGO):
+            c.drawCentredString(m_izq + d * col + col / 2, H - m_sup + 8, nombre)
+        c.setFillColor(HexColor("#000000"))
+
+        # bloques
+        for op in estado.seleccionadas(rama):
+            color = estado.colores.get(op.materia, "#DDDDDD")
+            for s in op.sesiones:
+                x1 = m_izq + s.dia * col + 2
+                x2 = m_izq + (s.dia + 1) * col - 2
+                yt, yb = y_de(s.inicio), y_de(s.fin)
+                c.setFillColor(HexColor(color))
+                c.setStrokeColor(HexColor("#455A64"))
+                c.rect(x1, yb, x2 - x1, yt - yb, fill=1, stroke=1)
+                c.setFillColor(HexColor("#212121"))
+                cx = (x1 + x2) / 2
+                lugar = f" · {op.salon}" if op.salon and op.salon != "000" else ""
+                if op.propia:
+                    l1 = _pdf_wrap(c, op.materia, "Helvetica-Bold", 7, x2 - x1 - 8)
+                    l2 = _pdf_wrap(c, f"{op.nota}{lugar}".strip(" ·"),
+                                   "Helvetica", 6.5, x2 - x1 - 8)
+                    prof = None
+                else:
+                    l1 = _pdf_wrap(c, f"{op.grupo} - {op.materia}",
+                                   "Helvetica-Bold", 7, x2 - x1 - 8)
+                    l2 = _pdf_wrap(c, f"{op.profesor}{lugar}", "Helvetica", 6.5,
+                                   x2 - x1 - 8)
+                    prof = op.profesor
+                alto_l = 9
+                total_alto = len(l1) * alto_l + len(l2) * alto_l
+                y = (yt + yb) / 2 + total_alto / 2 - alto_l + 2
+                for ln in l1:
+                    c.setFont("Helvetica-Bold", 7)
+                    c.drawCentredString(cx, y, texto_seguro(ln))
+                    y -= alto_l
+                y_prof_top = y + alto_l - 2
+                c.setFont("Helvetica", 6.5)
+                if prof and foro:
+                    c.setFillColor(HexColor("#0D47A1"))
+                for ln in l2:
+                    c.drawCentredString(cx, y, texto_seguro(ln))
+                    y -= alto_l
+                c.setFillColor(HexColor("#212121"))
+                # hipervínculo sobre el nombre del profe -> foro
+                if prof and foro:
+                    url = foro.replace("{profesor}", quote_plus(prof.strip()))
+                    c.linkURL(url, (x1, y + alto_l - 2, x2, y_prof_top),
+                              relative=0, thickness=0)
+        c.showPage()
+    c.save()
+
+
 def _sanear(nombre: str) -> str:
     return re.sub(r"[^\w\-]+", "_", nombre).strip("_") or "rama"
 
@@ -173,9 +288,12 @@ def exportar_ramas(estado: Estado, ramas: list[Rama], formato: str,
     creados: list[Path] = []
 
     if formato == "pdf":
-        paginas = [render_rama(estado, r) for r in ramas]
-        paginas[0].save(ruta, save_all=True, append_images=paginas[1:],
-                        resolution=150)
+        try:
+            render_pdf(estado, ramas, ruta)   # vectorial: texto real + links
+        except ImportError:
+            paginas = [render_rama(estado, r) for r in ramas]  # fallback raster
+            paginas[0].save(ruta, save_all=True, append_images=paginas[1:],
+                            resolution=150)
         return [ruta]
 
     usados: set[str] = set()

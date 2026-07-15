@@ -3,7 +3,7 @@ name = "horario-saes"
 version = "1.0.0"
 description = "Armador de horarios para el SAES: ramas, créditos, equivalencias y export a PDF/PNG"
 requires-python = ">=3.10"
-dependencies = ["pillow>=10", "requests", "beautifulsoup4"]
+dependencies = ["pillow>=10", "requests", "beautifulsoup4", "reportlab"]
 
 [project.gui-scripts]
 horario = "horario_saes.main:main"
